@@ -264,6 +264,38 @@ describe('physics', () => {
     physics.dispose();
   });
 
+  it('works the same at the far corner of a full-size island, beside the open sea', async () => {
+    const SEA = 40;
+    const world = new World(768, 128, 768, SEA);
+    // A shelf of land in the +x, +z corner, its top two blocks above the sea.
+    for (let z = 728; z < 768; z++) for (let x = 728; x < 768; x++) for (let y = 0; y <= SEA + 1; y++) world.setRaw(x, y, z, y === 0 ? B.bedrock : y > SEA - 2 ? B.dirt : B.stone);
+    const land = SEA + 2;
+    const { physics, events } = await setup({ settleTime: 1e9 }, world);
+    const viewOf = (id: number): BodyView => physics.bodies.find((b) => b.id === id) as BodyView;
+    const block = viewOf(physics.spawnBlock(B.stone, 760.4, land + 2.5, 761.6));
+    // Sand, and a little water in a hollow, three blocks from the edge of the world.
+    world.set(764, land + 5, 764, B.sand);
+    world.set(750, land - 1, 750, B.air);
+    world.set(750, land - 1, 750, waterState(9));
+    // A log thrown off the edge of the world lands in the endless sea and floats there until it drifts out of reach.
+    const log = viewOf(physics.spawnBlock(B.oak_log, 766.5, land + 1, 760.5, { x: 6, y: 2, z: 0 }));
+    run(physics, 4);
+    expect(block.y).toBeCloseTo(land + 0.5, 1);
+    expect(block.sleeping).toBe(true);
+    expect(world.get(764, land, 764)).toBe(B.sand);
+    expect(world.get(750, land - 1, 750)).toBe(waterState(9));
+    expect(physics.stats.fluidActive).toBe(0);
+    expect(log.x).toBeGreaterThan(768);
+    expect(log.y).toBeGreaterThan(SEA - 0.6);
+    expect(log.y).toBeLessThan(SEA + 0.2);
+    expect(events.some((e) => e.type === 'splash')).toBe(true);
+    // Shove it further out: past the margin it is forgotten.
+    physics.spawnBlock(B.oak_log, 790, SEA + 3, 760.5);
+    run(physics, 1);
+    expect(physics.bodies.some((b) => b.x > 780)).toBe(false);
+    physics.dispose();
+  });
+
   it('reports counts, and timings when given a clock', async () => {
     let t = 0;
     const { physics } = await setup({ now: () => (t += 0.25) });
