@@ -147,3 +147,59 @@ export class CellSet {
     this.size = 0;
   }
 }
+
+/**
+ * A small count (0..255) per world cell, kept per section like `CellSet`. The
+ * fluid uses it for the water each cell has received sideways in the current
+ * tick, which that cell may not pass on until the next.
+ */
+export class CellCounts {
+  private readonly bytes: (Uint8Array | null)[];
+  private readonly touched: number[] = [];
+  private readonly listed: Uint8Array;
+  private readonly sx: number;
+  private readonly sy: number;
+  private readonly sz: number;
+  private readonly nsx: number;
+  private readonly nsz: number;
+
+  constructor(world: World) {
+    this.sx = world.sx;
+    this.sy = world.sy;
+    this.sz = world.sz;
+    this.nsx = world.nsx;
+    this.nsz = world.nsz;
+    this.bytes = new Array<Uint8Array | null>(world.sectionCount).fill(null);
+    this.listed = new Uint8Array(world.sectionCount);
+  }
+
+  /** Add to a cell's count; cells outside the world are ignored. */
+  add(x: number, y: number, z: number, n: number): void {
+    if (x < 0 || y < 0 || z < 0 || x >= this.sx || y >= this.sy || z >= this.sz) return;
+    const si = ((y >> 5) * this.nsz + (z >> 5)) * this.nsx + (x >> 5);
+    let b = this.bytes[si];
+    if (!b) {
+      b = new Uint8Array(32768);
+      this.bytes[si] = b;
+    }
+    if (this.listed[si] === 0) {
+      this.listed[si] = 1;
+      this.touched.push(si);
+    }
+    const idx = ((y & 31) << 10) | ((z & 31) << 5) | (x & 31);
+    b[idx] = (b[idx] as number) + n;
+  }
+
+  /** A cell's count; `si` and `idx` are its section and its index within the section. */
+  at(si: number, idx: number): number {
+    return this.listed[si] === 0 ? 0 : ((this.bytes[si] as Uint8Array)[idx] as number);
+  }
+
+  clear(): void {
+    for (const si of this.touched) {
+      (this.bytes[si] as Uint8Array).fill(0);
+      this.listed[si] = 0;
+    }
+    this.touched.length = 0;
+  }
+}

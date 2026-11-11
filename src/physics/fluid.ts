@@ -12,7 +12,7 @@
 import { hash3i } from '../core/rng';
 import { B, REPLACEABLE, SOLID, WATER_LEVEL, WATER_SOURCE } from '../world/blocks';
 import type { World } from '../world/world';
-import { CellSet } from './cellset';
+import { CellCounts, CellSet } from './cellset';
 import { DX, DZ, PressureSearch, share, waterFlow } from './leveling';
 import type { EmitEvent } from './types';
 
@@ -68,10 +68,16 @@ export class Fluid {
 
   private cur: CellSet;
   private next: CellSet;
-  /** Cells that received water sideways this tick: they wait a tick before passing it on, so flow speed does not depend on scan direction. */
-  private readonly moved: CellSet;
+  /**
+   * Units each cell has received sideways during the current tick. A cell shares out only what it held before
+   * them, so water moves one cell a tick whichever way the scan happens to run, and a cell that is fed every
+   * tick still passes water on every tick.
+   */
+  private readonly received: CellCounts;
   private readonly pressure: PressureSearch;
   private searches = 0;
+  /** Cells that are thin films waiting to dry, with the tick each is due; the wheel holds the same cells by due tick. */
+  private readonly films = new Map<number, number>();
   private readonly wheel: number[][];
   private readonly wheelMask: number;
   private readonly seed: number;
@@ -91,7 +97,7 @@ export class Fluid {
     if (world.sx * world.sy * world.sz >= 2 ** 32) throw new Error('world too large for fluid cell keys');
     this.cur = new CellSet(world);
     this.next = new CellSet(world);
-    this.moved = new CellSet(world);
+    this.received = new CellCounts(world);
     this.pressure = new PressureSearch(world, Math.max(4, opts.searchCells ?? 192));
     this.seed = opts.seed ?? 0;
     this.sourceRate = Math.max(1, Math.min(16, opts.sourceRate ?? 4));
@@ -171,7 +177,7 @@ export class Fluid {
     const cur = this.next;
     this.next = this.cur;
     this.cur = cur;
-    this.moved.clear();
+    this.received.clear();
     const sections = cur.sections;
     // Bottom sections first, so falling water vacates a cell before the cell above is looked at.
     sections.sort((a, b) => a - b);
@@ -216,6 +222,8 @@ export class Fluid {
   /** Write a finite level (0 is air). `old` is the state being replaced, so a plant in the way is reported. */
   private setLevel(x: number, y: number, z: number, level: number, old: number = AIR): void {
     if (old !== AIR && LEVEL[old] === 0) this.emit({ type: 'burst', x: x + 0.5, y: y + 0.5, z: z + 0.5, state: old });
+    // A film that gains or loses water is no longer waiting to dry.
+    if (old === WATER && this.films.size > 0) this.films.delete((y * this.world.sz + z) * this.world.sx + x);
     this.world.set(x, y, z, level <= 0 ? AIR : WATER + level - 1);
     this.next.addAround(x, y, z);
   }
@@ -236,19 +244,21 @@ export class Fluid {
     const lx = idx & 31;
     const lz = (idx >> 5) & 31;
     const ly = idx >> 10;
-    const inX = raw !== null && lx > 0 && lx < 31;
-    const inZ = raw !== null && lz > 0 && lz < 31;
-    const inY = raw !== null && ly > 0 && ly < 31;
-    const inside = inX && inY && inZ;
+    // Each neighbour is read from this section's array when it lies in it, which is nearly always.
+    const arr = raw as Uint16Array;
+    const has = raw !== null;
+    const inside = has && lx > 0 && lx < 31 && lz > 0 && lz < 31 && ly > 0;
+    const edge = x === 0 || z === 0 || x === w.sx - 1 || z === w.sz - 1;
 
     const nLevel = this.nLevel;
     const nGive = this.nGive;
     const nState = this.nState;
     const nOpen = this.nOpen;
-    nState[0] = inX ? ((raw as Uint16Array)[idx + 1] as number) : w.get(x + 1, y, z);
-    nState[1] = inZ ? ((raw as Uint16Array)[idx + 32] as number) : w.get(x, y, z + 1);
-    nState[2] = inX ? ((raw as Uint16Array)[idx - 1] as number) : w.get(x - 1, y, z);
-    nState[3] = inZ ? ((raw as Uint16Array)[idx - 32] as number) : w.get(x, y, z - 1);
+    nState[0] = has && lx < 31 ? (arr[idx + 1] as number) : w.get(x + 1, y, z);
+    nState[1] = has && lz < 31 ? (arr[idx + 32] as number) : w.get(x, y, z + 1);
+    nState[2] = has && lx > 0 ? (arr[idx - 1] as number) : w.get(x - 1, y, z);
+    nState[3] = has && lz > 0 ? (arr[idx - 32] as number) : w.get(x, y, z - 1);
+    const above = has && ly < 31 ? (arr[idx + 1024] as number) : w.get(x, y + 1, z);
     let sources = 0;
     let shallow = true;
     for (let i = 0; i < 4; i++) {
@@ -259,12 +269,12 @@ export class Fluid {
       nOpen[i] = 0;
       if (nl > 1) shallow = false;
       if (SOURCE[ns]) sources++;
-      else if ((nl > 0 || OPEN[ns]) && (inside || w.inBounds(x + (NX[i] as number), y, z + (NZ[i] as number)))) nOpen[i] = 1;
+      else if ((nl > 0 || OPEN[ns]) && (!edge || w.inBounds(x + (NX[i] as number), y, z + (NZ[i] as number)))) nOpen[i] = 1;
     }
     let level = start;
 
     // 1. Down, as much as fits.
-    let below = inY ? ((raw as Uint16Array)[idx - 1024] as number) : w.get(x, y - 1, z);
+    let below = has && ly > 0 ? (arr[idx - 1024] as number) : w.get(x, y - 1, z);
     if (SOURCE[below]) {
       // Water lying on a lake is swallowed, unless it is in the lake's own
       // layer (a source beside it): then it is a hole in the lake filling up.
@@ -282,27 +292,26 @@ export class Fluid {
       }
     }
     if (level === 0) {
-      this.setLevel(x, y, z, 0);
+      this.setLevel(x, y, z, 0, s);
       return;
     }
 
-    // 2. Sideways, unless this water only just arrived sideways.
-    if (this.moved.has(x, y, z)) {
-      this.next.add(x, y, z);
-      if (level !== start) this.setLevel(x, y, z, level);
-      return;
-    }
+    // 2. Sideways: only the water that was here before this tick's arrivals.
+    const got = this.received.at(si, idx);
+    const own = level > got ? level - got : 0;
+    // Still taking water in: look again next tick, when what arrived can move on.
+    if (got > 0) this.next.add(x, y, z);
     // Rotate the starting direction so the odd unit does not always go the same way.
     const r = (x * 3 + z * 5 + this.ticks) & 3;
-    const gave = share(level, r, nLevel, nGive, nOpen, this.ord);
+    const gave = own > 0 ? share(own, r, nLevel, nGive, nOpen, this.ord) : 0;
     level -= gave;
-    if (gave === 0) {
+    if (gave === 0 && got === 0) {
       // No whole step to shed. A unit may still go over an edge it can fall from...
       let over = false;
       for (let k = 0; k < 4 && !over; k++) {
         const i = (r + k) & 3;
         if (nOpen[i] !== 1 || (nLevel[i] as number) !== level - 1) continue;
-        const under = inside ? ((raw as Uint16Array)[idx + (OFF[i] as number) - 1024] as number) : w.get(x + (NX[i] as number), y - 1, z + (NZ[i] as number));
+        const under = inside ? (arr[idx + (OFF[i] as number) - 1024] as number) : w.get(x + (NX[i] as number), y - 1, z + (NZ[i] as number));
         // Whatever can take falling water: air, a plant, water with room, or a source that swallows it.
         if (!OPEN[under] || ((LEVEL[under] as number) >= 16 && !SOURCE[under])) continue;
         nLevel[i] = level;
@@ -311,17 +320,17 @@ export class Fluid {
         over = true;
       }
       // ...or through connected water to somewhere lower, if this is the surface.
-      if (!over && LEVEL[inY ? ((raw as Uint16Array)[idx + 1024] as number) : w.get(x, y + 1, z)] === 0) level -= this.seek(x, y, z, level, below);
+      if (!over && LEVEL[above] === 0) level -= this.seek(x, y, z, level, below);
     }
     for (let i = 0; i < 4; i++) {
       if ((nGive[i] as number) === 0) continue;
       const nx = x + (NX[i] as number);
       const nz = z + (NZ[i] as number);
       this.setLevel(nx, y, nz, nLevel[i] as number, nState[i] as number);
-      this.moved.add(nx, y, nz);
+      this.received.add(nx, y, nz, nGive[i] as number);
     }
     if (level === 0) {
-      this.setLevel(x, y, z, 0);
+      this.setLevel(x, y, z, 0, s);
       return;
     }
 
@@ -339,10 +348,15 @@ export class Fluid {
       return;
     }
     if (level !== start) this.setLevel(x, y, z, level);
-    if (level === 1 && shallow && sources === 0 && LEVEL[below] === 0 && LEVEL[w.get(x, y + 1, z)] === 0) {
-      const delay = this.evaporateTicks + (hash3i(x, y, z, this.seed) % ((this.evaporateTicks >> 1) + 1));
-      (this.wheel[(this.ticks + delay) & this.wheelMask] as number[]).push((y * w.sz + z) * w.sx + x);
-    }
+    const key = (y * w.sz + z) * w.sx + x;
+    if (level === 1 && shallow && sources === 0 && LEVEL[below] === 0 && LEVEL[above] === 0) {
+      // A film: it dries after a while, counted from when it was first seen as one.
+      if (!this.films.has(key)) {
+        const due = this.ticks + this.evaporateTicks + (hash3i(x, y, z, this.seed) % ((this.evaporateTicks >> 1) + 1));
+        this.films.set(key, due);
+        (this.wheel[due & this.wheelMask] as number[]).push(key);
+      }
+    } else if (start === 1 && this.films.size > 0) this.films.delete(key);
   }
 
   /** Send water from a stalled surface cell to a lower cell it is connected to under pressure. Returns the units sent. */
@@ -360,7 +374,7 @@ export class Fluid {
     // With a block or more of head behind it water moves faster.
     const sent = p.ty < y ? Math.min(level, 16 - there, 4) : 1;
     this.setLevel(p.tx, p.ty, p.tz, there + sent, p.tState);
-    this.moved.add(p.tx, p.ty, p.tz);
+    this.received.add(p.tx, p.ty, p.tz, sent);
     return sent;
   }
 
@@ -385,7 +399,7 @@ export class Fluid {
       const give = Math.min(this.sourceRate, 16 - nl);
       this.created += give;
       this.setLevel(nx, y, nz, nl + give, ns);
-      this.moved.add(nx, y, nz);
+      this.received.add(nx, y, nz, give);
     }
   }
 
@@ -397,6 +411,9 @@ export class Fluid {
       const x = key % w.sx;
       const z = Math.floor(key / w.sx) % w.sz;
       const y = Math.floor(key / (w.sx * w.sz));
+      // Only if this is still the appointment the cell holds: it may have stopped being a film, or become one again later.
+      if (this.films.get(key) !== this.ticks) continue;
+      this.films.delete(key);
       if (w.get(x, y, z) !== WATER) continue;
       if (LEVEL[w.get(x, y - 1, z)] !== 0 || LEVEL[w.get(x, y + 1, z)] !== 0) continue;
       let thin = true;
