@@ -6,6 +6,7 @@
 // Define OCEAN to draw the open-sea skirt beyond the world from plain positions.
 
 import { ATMOSPHERE_GLSL } from '../atmosphere';
+import { CLOUD_DENSITY } from './clouds';
 import { COMMON, FRAME_BLOCK, TILE_SAMPLE } from './common';
 import { FOG, SHADOWS } from './lighting';
 
@@ -59,6 +60,7 @@ ${COMMON}
 ${ATMOSPHERE_GLSL}
 ${SHADOWS}
 ${FOG}
+${CLOUD_DENSITY}
 ${TILE_SAMPLE}
 uniform sampler2D uScene;
 uniform sampler2D uDepth;
@@ -145,11 +147,14 @@ void main() {
     float sky = vLight.x * vLight.x;
     vec3 lit = uAmbientSky.rgb * sky + uLightColor.rgb * saturate(dot(N, uLightDir.xyz)) * 0.8;
     // Lamplight behind a window makes the panes glow from outside.
-    vec3 warm = vec3(1.0, 0.62, 0.28) * pow(vLight.y, 2.2) * 2.2;
-    vec3 c = a.rgb * (lit + warm * (a.a < 0.6 ? 2.2 : 1.0));
-    float fres = 0.04 + 0.96 * pow(1.0 - saturate(dot(N, V)), 5.0);
-    c += skyColor(reflect(-V, N)) * fres * (a.a < 0.6 ? 1.0 : 0.0);
-    oColor = vec4(applyFog(c, eye, vWorld), max(a.a, fres * 0.7));
+    vec3 warm = vec3(1.0, 0.62, 0.28) * pow(vLight.y, 2.2) * 2.2 * uGrassTint.a;
+    bool pane = a.a < 0.6;
+    // A pane is nearly clear: by day it shows the dim room behind it and a sheen of sky; by night, the lamplight inside.
+    vec3 c = a.rgb * (lit * (pane ? 0.22 : 1.0) + warm * (pane ? 2.4 : 1.0));
+    float fres = 0.05 + 0.95 * pow(1.0 - saturate(dot(N, V)), 5.0);
+    vec3 R = reflect(-V, N);
+    if (pane) c += skyColor(normalize(vec3(R.x, abs(R.y) + 0.05, R.z))) * fres * 0.8 * sky;
+    oColor = vec4(applyFog(c, eye, vWorld), pane ? max(0.32, fres) : 1.0);
     return;
   }
 
@@ -169,6 +174,18 @@ void main() {
   float distFade = 1.0 - smoothstep(60.0, 260.0, dist);
   if (top) {
     vec2 g = waveSlope(p, t, chop, distFade, 1.0 - smoothstep(250.0, 1100.0, dist));
+    // Rain: each drop throws out a ring that widens and dies.
+    float rain = uWeather.z * distFade * (1.0 - step(0.5, uMisc.x));
+    if (rain > 0.02) {
+      vec2 c = vWorld.xz * 1.6;
+      vec2 cell = floor(c);
+      float life = fract(t * 1.7 + hash12(cell) * 9.0);
+      vec2 centre = cell + 0.25 + 0.5 * hash22(cell + floor(t * 1.7 + hash12(cell) * 9.0));
+      vec2 d = c - centre;
+      float r = length(d);
+      float ring = sin((r - life * 0.42) * 46.0) * exp(-pow((r - life * 0.42) * 9.0, 2.0)) * (1.0 - life);
+      g += normalize(d + 1e-4) * ring * 0.55 * rain * step(hash12(cell + 3.7), rain * 1.4);
+    }
     N = normalize(vec3(-g.x, 1.0, -g.y));
   } else {
     // Falling water: streaks sliding down the face.
@@ -192,7 +209,7 @@ void main() {
 
   vec3 L = uLightDir.xyz;
   float ndlUp = saturate(L.y);
-  float shadow = mix(1.0, keyShadow(vWorld, vec3(0.0, 1.0, 0.0), ndlUp, dist, gl_FragCoord.xy), uLightDir.w);
+  float shadow = mix(1.0, keyShadow(vWorld, vec3(0.0, 1.0, 0.0), ndlUp, dist, gl_FragCoord.xy), uLightDir.w) * cloudShadow(vWorld);
   float sky = vLight.x * vLight.x;
 
   if (below) {

@@ -555,7 +555,8 @@ export const B = {
   stool: register('stool', 0, {
     shape: SHAPE_BOXES, tiles: all('pine_planks'),
     boxes: [box(3, 6, 3, 13, 8, 13), box(4, 0, 4, 6, 6, 6), box(10, 0, 4, 12, 6, 6), box(4, 0, 10, 6, 6, 12), box(10, 0, 10, 12, 6, 12)],
-    collision: [box(3, 0, 3, 13, 8, 13)], mat: MAT.wood, walkCost: 0,
+    // Walkable on purpose: a stool is a low step, which is how someone comes to be sitting on it.
+    collision: [box(3, 0, 3, 13, 8, 13)], mat: MAT.wood, walkCost: 2.5,
   }),
   bed: (() => {
     let base = -1;

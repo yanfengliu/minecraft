@@ -11,7 +11,9 @@ import { MOON_RATIO, SUN_INTENSITY, domeRadiance, transmittanceTo } from './atmo
 type Rgb3 = [number, number, number];
 
 /** Sky-dome light is boosted over bare single scattering to stand in for haze and inter-reflection. */
-const AMBIENT_BOOST = 2.6;
+const AMBIENT_BOOST = 3.3;
+/** The exposure that authored light (torches, stars) was tuned against. */
+const EXPOSURE_REF = 3.2;
 
 // Tint multipliers at the middle of each season; values between are interpolated around the year.
 const GRASS: Rgb3[] = [[0.94, 1.03, 0.84], [1.0, 0.98, 0.84], [1.22, 0.96, 0.68], [1.06, 0.92, 0.84]];
@@ -47,6 +49,12 @@ export class Environment {
   sunIntensity = SUN_INTENSITY;
   moonIntensity = 0;
   exposure = 0.55;
+  /**
+   * Scale for light that is authored, not simulated (torches, glowing tiles, stars, the moon's disc):
+   * it cancels whatever exposure has risen beyond the reference, so those look the same on a moonless
+   * night as on a moonlit one instead of burning out.
+   */
+  preExposure = 1;
   grassTint: Rgb3 = [1, 1, 1];
   foliageTint: Rgb3 = [1, 1, 1];
   birchTint: Rgb3 = [1, 1, 1];
@@ -65,8 +73,9 @@ export class Environment {
     this.sunDir = sun;
     this.moonDir = moon;
     const cover = weather.cloudCover;
-    // Cloud dims direct light much more than it dims the sky as a whole.
-    const directThrough = 1 - 0.9 * Math.pow(cover, 1.6);
+    // Cloud dims direct light much more than it dims the sky as a whole. Most of that is done per pixel
+    // by the cloud shadows themselves; this is the part thin high cloud takes everywhere.
+    const directThrough = 1 - 0.5 * cover * cover;
 
     const sunT = transmittanceTo(sun);
     const sunUp = smoothstep(-0.03, 0.02, sun.y);
@@ -94,30 +103,46 @@ export class Environment {
     // Under cloud the dome turns grey, and the light the cloud deck took from the sun comes back as soft fill.
     const grey = 0.2126 * ar + 0.7152 * ag + 0.0722 * ab;
     const lost = (SUN_INTENSITY * sunUp * (sunT.x + sunT.y + sunT.z)) / 3 / Math.PI * Math.max(sun.y, 0) * (1 - directThrough);
-    const overcast = grey * 1.15 + lost * 0.3 * (1 - 0.45 * weather.storminess);
+    const overcast = grey * 1.05 + lost * 0.07 * (1 - 0.45 * weather.storminess);
     ar = lerp(ar, overcast * 0.95, cover * cover);
     ag = lerp(ag, overcast * 0.99, cover * cover);
     ab = lerp(ab, overcast * 1.06, cover * cover);
+    // Shade is blue, but not as blue as the zenith: light reaching it has also bounced off cloud and ground.
+    const mean = (ar + ag + ab) / 3;
+    ar = lerp(ar, mean, 0.35);
+    ag = lerp(ag, mean, 0.35);
+    ab = lerp(ab, mean, 0.35);
     this.ambientSky = [ar + 0.0012, ag + 0.0016, ab + 0.0026];
 
-    const bounce = Math.max(this.keyDir.y, 0) * 0.14;
+    // Sunlit ground throws warm light back up under eaves and onto shaded walls.
+    const bounce = Math.max(this.keyDir.y, 0) * 0.24 * directThrough;
     this.ambientGround = [
-      (ar * 0.34 + this.keyColor[0] * bounce) * 0.95,
-      (ag * 0.34 + this.keyColor[1] * bounce) * 0.9,
-      (ab * 0.34 + this.keyColor[2] * bounce) * 0.72,
+      (ar * 0.4 + this.keyColor[0] * bounce) * 0.95,
+      (ag * 0.4 + this.keyColor[1] * bounce) * 0.88,
+      (ab * 0.4 + this.keyColor[2] * bounce) * 0.7,
     ];
 
     this.night = 1 - smoothstep(-0.14, 0.06, sun.y);
     this.fogDensity = 0.00009 + weather.fog * weather.fog * 0.03 + weather.precipitation * 0.0035;
 
-    // Exposure: bright day to dark night, opened further under heavy cloud, in caves and indoors,
-    // and stopped down beside a fire so its light does not burn out.
-    const day = smoothstep(-0.12, 0.2, sun.y);
-    let target = lerp(3.2, 0.5, day);
-    target *= 1 + 0.5 * cover * day;
+    // Exposure follows the light actually in the scene, the way an eye or a camera does: twilight is a
+    // thousand times dimmer than noon and still has to be seen. `scene` estimates the radiance of lit
+    // ground per unit albedo; `aim` is how bright that should end up on screen at this time of day, so
+    // night stays darker than day by design, not by accident.
+    const lum = (c: Rgb3): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    // Direct light counts only as far as the cloud deck lets it through (its shadow is applied per pixel).
+    const underCloud = 1 - 0.9 * Math.pow(cover, 1.5);
+    const scene = lum(this.ambientSky) + 0.6 * lum(this.keyColor) * Math.max(this.keyDir.y, 0.15) * underCloud;
+    // Brightness falls quickly once the sun is down: dusk at -6 degrees is already a fifth of day.
+    const day = smoothstep(-0.22, 0.14, sun.y);
+    const moonGlow = this.moonLit * moonUp * (1 - 0.7 * cover);
+    const aim = lerp(0.1 + 0.3 * moonGlow, 1.43, Math.pow(day, 1.8)) * (1 - 0.3 * cover * day);
+    let target = Math.min(Math.max(aim / Math.max(scene, 1e-5), 0.3), 300);
+    // Out of the daylight (a cave, a shuttered room) the eye opens up.
     target *= lerp(1, 2.4, (1 - eyeSky) * day * (1 - eyeBlock));
-    target *= lerp(1, 0.62, eyeBlock * (1 - day));
-    this.exposure = dt > 0 ? damp(this.exposure, target, 1.6, dt) : target;
+    // Ease in stops, not in linear light, so a jump of a hundredfold is as smooth as one of two.
+    this.exposure = dt > 0 ? Math.exp(damp(Math.log(this.exposure), Math.log(target), 1.8, dt)) : target;
+    this.preExposure = Math.min(1, EXPOSURE_REF / this.exposure);
 
     this.grassTint = seasonal(GRASS, clock.yearProgress);
     this.foliageTint = seasonal(FOLIAGE, clock.yearProgress);

@@ -20,7 +20,7 @@ layout(std140) uniform Frame {
   vec4 uWeather;       // x wetness, y snow cover, z precipitation, w cloud cover
   vec4 uScreen;        // xy render size in pixels, zw its reciprocal
   vec4 uClip;          // x near, y far, z sea surface height, w exposure
-  vec4 uGrassTint;     // rgb multiplier for grass, a unused
+  vec4 uGrassTint;     // rgb multiplier for grass, a scale for authored light (torches, stars) that cancels night exposure
   vec4 uFoliageTint;   // rgb multiplier for deciduous leaves
   vec4 uBirchTint;     // rgb multiplier for birch leaves
   vec4 uWorld;         // xy world size in blocks along x and z, z night factor 0..1, w lightning flash

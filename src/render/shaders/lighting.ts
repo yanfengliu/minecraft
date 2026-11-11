@@ -2,6 +2,7 @@
 // Also holds the cascaded shadow lookup and the fog that every lit thing shares.
 
 import { ATMOSPHERE_GLSL } from '../atmosphere';
+import { CLOUD_DENSITY } from './clouds';
 import { COMMON, FRAME_BLOCK } from './common';
 
 /** Cascaded shadow lookup. Needs uShadowMap, uShadowMat[4], uShadowSplit, uShadowTexel in scope. */
@@ -82,12 +83,14 @@ ${COMMON}
 ${ATMOSPHERE_GLSL}
 ${SHADOWS}
 ${FOG}
+${CLOUD_DENSITY}
 uniform sampler2D uAlbedo;
 uniform sampler2D uNormal;
 uniform sampler2D uLight;
 uniform sampler2D uDepth;
 uniform sampler2D uAO;
 uniform sampler2D uClouds;
+uniform sampler2D uHeightTex;
 
 in vec2 vUV;
 out vec4 oColor;
@@ -144,7 +147,7 @@ vec3 renderSky(vec3 dir) {
     }
   }
   vec3 stars = starField(dir) * night * smoothstep(-0.05, 0.2, dir.y) * (1.0 - uWeather.w);
-  return sky + disc + moon + stars;
+  return sky + disc + (moon + stars) * uGrassTint.a;
 }
 
 void main() {
@@ -175,28 +178,50 @@ void main() {
   float foliage = g2.a;
   float ssao = texture(uAO, vUV).r;
 
+  // --- weather on surfaces ---
+  // Open to the sky if nothing in this column stands above the point: the same map that stops the rain.
+  float roof = texture(uHeightTex, world.xz / uWorld.xy).r * 255.0;
+  float open = smoothstep(roof - 1.3, roof - 0.25, world.y);
+  float wet = uWeather.x * open;
+  float flatness = smoothstep(0.86, 0.98, N.y);
+  // Water gathers in the low patches of level ground once it has rained for a while.
+  float puddle = wet * flatness * smoothstep(0.52, 0.7, fbm2(world.xz * 0.31)) * smoothstep(0.3, 0.75, uWeather.x) * (1.0 - foliage);
+  albedo *= mix(1.0, 0.6, wet * (1.0 - 0.4 * foliage));
+  rough = mix(rough, 0.32, wet * 0.75);
+  rough = mix(rough, 0.05, puddle);
+  N = normalize(mix(N, vec3(0.0, 1.0, 0.0), puddle));
+  // Snow lies on what faces the sky, thicker with height, ragged at its edge.
+  float snowLine = smoothstep(96.0, 112.0, world.y + 6.0 * fbm2(world.xz * 0.07));
+  float snowAmount = max(uWeather.y, snowLine * 0.85);
+  float lie = smoothstep(0.25, 0.7, N.y + (fbm2(world.xz * 0.9) - 0.5) * 0.5);
+  float snow = saturate(snowAmount * 1.3) * open * lie * smoothstep(0.0, 0.25, snowAmount + fbm2(world.xz * 0.23) * 0.3 - 0.15);
+  albedo = mix(albedo, vec3(0.84, 0.89, 0.95), snow);
+  rough = mix(rough, 0.62, snow);
+
   vec3 L = uLightDir.xyz;
   float ndl = dot(N, L);
   // Leaves and grass let some light through from behind instead of going black.
   float wrap = foliage * 0.35;
   float lambert = saturate((ndl + wrap) / (1.0 + wrap));
   float shadow = lambert > 0.0 ? keyShadow(world, N, saturate(ndl), dist, gl_FragCoord.xy) : 0.0;
-  shadow = mix(1.0, shadow, uLightDir.w);
+  shadow = mix(1.0, shadow, uLightDir.w) * cloudShadow(world);
 
   float occl = mix(0.42, 1.0, ao) * ssao;
   float skyVis = sky * sky;
 
   // Key light.
   vec3 direct = uLightColor.rgb * lambert * shadow * mix(1.0, occl, 0.35);
-  // Sky dome from above, ground bounce from below.
+  // Sky dome from above, ground bounce from below; a wall gets a good share of both.
   float up = N.y * 0.5 + 0.5;
-  vec3 ambient = mix(uAmbientGround.rgb, uAmbientSky.rgb, up) * skyVis * occl;
+  vec3 ambient = (mix(uAmbientGround.rgb, uAmbientSky.rgb, up) + uAmbientGround.rgb * (1.0 - abs(N.y)) * 0.6) * skyVis * occl;
   // Torches and lanterns: warm, and warmer as they fade.
   float flicker = 0.94 + 0.06 * sin(uCameraPos.w * 9.0 + world.x * 0.7 + world.z * 0.9) * sin(uCameraPos.w * 5.3 + world.y);
+  // Authored light (see Environment.preExposure): scaled so it reads the same whatever the night's exposure.
+  float pre = uGrassTint.a;
   vec3 warm = mix(vec3(1.0, 0.42, 0.12), vec3(1.0, 0.72, 0.38), block);
-  vec3 torch = warm * pow(block, 2.4) * 2.6 * flicker * mix(0.6, 1.0, occl);
+  vec3 torch = warm * pow(block, 2.4) * 2.2 * flicker * mix(0.6, 1.0, occl) * pre;
   // Never quite black: a faint fill so deep caves and moonless nights keep their shapes.
-  vec3 floor_ = vec3(0.012, 0.014, 0.02) * occl;
+  vec3 floor_ = vec3(0.012, 0.014, 0.02) * occl * pre;
 
   vec3 color = albedo * (direct + ambient + torch + floor_);
 
@@ -210,9 +235,17 @@ void main() {
     color += uLightColor.rgb * PI * distributionGGX(ndh, a) * visibilitySmith(ndv, ndl, a) * F * ndl * shadow;
   }
 
-  color += albedo * emission * 6.0;
+  // Wet ground and standing water mirror the sky.
+  if (wet > 0.01) {
+    float ndv = max(dot(N, V), 0.0);
+    float F = 0.03 + 0.97 * pow(1.0 - ndv, 5.0);
+    vec3 R = reflect(-V, N);
+    color += skyColor(normalize(vec3(R.x, abs(R.y) + 0.02, R.z))) * F * skyVis * (puddle * 0.9 + wet * 0.12) * (1.0 - rough);
+  }
+
+  color += albedo * emission * 6.0 * pre;
   // A lightning stroke lights everything under open sky for an instant.
-  color += albedo * uWorld.w * skyVis * (0.6 + 0.4 * up) * 3.0;
+  color += albedo * uWorld.w * skyVis * (0.6 + 0.4 * up) * 3.0 * pre;
 
   oColor = vec4(applyFog(color, eye, world), 1.0);
 }
@@ -233,7 +266,7 @@ void main() {
   vec3 c = scatterFrom(rd, uSunDir.xyz, through) * uSunIntensity;
   if (uMoonIntensity > 0.0) c += scatterFrom(rd, uMoonDir.xyz, through) * uMoonIntensity;
   // Starlight and airglow: the sky is never fully black.
-  c += vec3(0.0008, 0.0011, 0.002) * (0.4 + 0.6 * saturate(rd.y + 0.2));
+  c += vec3(0.0008, 0.0011, 0.002) * (0.4 + 0.6 * saturate(rd.y + 0.2)) * uGrassTint.a;
   // Overcast flattens the sky toward the grey underside of the cloud deck.
   float cover = uWeather.w;
   float grey = luma(c);

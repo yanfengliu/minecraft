@@ -1,6 +1,7 @@
 // Entry point: shows the loading screen, builds the game, and publishes the
 // debug interface that the browser gate and visual inspection both drive.
 
+import './ui/style.css';
 import { Game } from './game';
 import { REGIMES, type Regime } from './sim/weather';
 import { DEFAULT_ISLAND, type IslandConfig } from './world/gen/terrain';

@@ -118,7 +118,8 @@ export class Weather implements WeatherView {
 
   /** Seasonal mean plus the daily swing, before regime effects. */
   private baseTemperature(): number {
-    const seasonal = 9.5 + 11.5 * Math.sin(TAU * (this.clock.yearProgress - 0.17));
+    // About 3 C as spring opens, 24 C at high summer, a little under freezing in the depth of winter.
+    const seasonal = 11 + 13 * Math.sin(TAU * (this.clock.yearProgress - 0.1));
     const daily = -5 * Math.cos(((this.clock.hour - 3) / 24) * TAU) * (1 - 0.6 * this.cloudCover);
     return seasonal + daily;
   }

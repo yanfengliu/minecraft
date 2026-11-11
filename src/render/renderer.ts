@@ -5,6 +5,7 @@
 import type { MeshOutput } from '../mesh/mesher';
 import { tileIndex } from '../world/tiles';
 import type { World } from '../world/world';
+import { EntityRenderer } from './entities/renderer';
 import type { Environment } from './environment';
 import { FrameUniforms } from './frame';
 import {
@@ -15,11 +16,14 @@ import { type Mat4, frustumPlanes, invert, lookDir, mat4, multiply, perspective 
 import { type SectionMesh, SectionStore } from './sectionStore';
 import { CASCADES, type CameraFrame, ShadowCascades } from './shadows';
 import { CHUNK_GBUFFER_FS, CHUNK_SHADOW_FS, CHUNK_VS } from './shaders/chunk';
+import { CLOUDS_FS, CLOUD_NOISE_FS, NOISE_SIZE } from './shaders/clouds';
+import { ENTITY_FS, ENTITY_SHADOW_FS, ENTITY_VS } from './shaders/entity';
 import { LIGHTING_FS, SKY_LUT_FS } from './shaders/lighting';
 import { OVERLAY_FS, OVERLAY_VS, overlayCube } from './shaders/overlay';
+import { PRECIP_FS, PRECIP_VS } from './shaders/precip';
 import { BLOOM_DOWN_FS, BLOOM_UP_FS, COMPOSITE_FS, FXAA_FS, SSAO_BLUR_FS, SSAO_FS } from './shaders/post';
 import { WATER_FS, WATER_VS } from './shaders/water';
-import { buildTileSet } from './tiles';
+import { type TileSet, buildTileSet } from './tiles';
 
 export interface Camera {
   x: number;
@@ -60,7 +64,7 @@ export interface FrameInfo {
   /** Hour of the simulated day, for the star field. */
   hour: number;
   wind: { x: number; z: number; strength: number };
-  weather: { wetness: number; snow: number; rain: number; cloud: number; storm: number };
+  weather: { wetness: number; snow: number; rain: number; cloud: number; storm: number; snowing: boolean };
   underwater: boolean;
 }
 
@@ -94,6 +98,8 @@ export class Renderer {
   readonly settings: RenderSettings;
   readonly stats: RenderStats = { drawCalls: 0, triangles: 0, sections: 0, visible: 0, shadowDraws: 0, width: 0, height: 0, meshBytes: 0 };
   readonly frame: FrameUniforms;
+  /** The painted tiles, kept for the interface's item icons. */
+  readonly tileSet: TileSet;
 
   private readonly world: World;
   private readonly shadows: ShadowCascades;
@@ -120,6 +126,25 @@ export class Renderer {
   private readonly oceanVao: WebGLVertexArrayObject;
   private readonly pOverlay: Program;
   private readonly overlayVao: WebGLVertexArrayObject;
+  private readonly pClouds: Program;
+  private readonly cloudNoise: WebGLTexture;
+  /** Quarter-resolution cloud buffers: this frame's and last frame's, swapped each frame. */
+  private clouds: [Target, Target] | null = null;
+  private cloudFlip = 0;
+  private cloudFresh = true;
+  private readonly prevViewProj: Mat4 = mat4();
+  /** Creatures and loose bodies: fill it between `begin()` and `finish()` each frame, before `render`. */
+  readonly entities: EntityRenderer;
+  private readonly pEntity: Program;
+  private readonly pEntityShadow: Program;
+  private readonly pPrecip: Program;
+  private readonly pSplash: Program;
+  private readonly quadVao: WebGLVertexArrayObject;
+  /** Per column, the height below which rain cannot fall: the world's rain heightmap as a texture. */
+  private readonly heightTex: WebGLTexture;
+  /** Set when blocks changed; the height texture is refreshed a few times a second at most. */
+  heightsDirty = false;
+  private heightsAge = 0;
   /** The block to outline (world-space box) and how far along breaking it is, or null. */
   selection: { box: number[]; progress: number } | null = null;
 
@@ -159,6 +184,7 @@ export class Renderer {
     this.shadows = new ShadowCascades(gl, this.settings.shadowResolution, this.settings.shadowDistance);
 
     const set = buildTileSet();
+    this.tileSet = set;
     // Linear magnification on purpose: tileSample in the shaders rebuilds crisp texels from it.
     const layered = (data: Uint8Array, internalFormat: number): WebGLTexture => createTexture(gl, {
       target: gl.TEXTURE_2D_ARRAY, width: set.size, height: set.size, depth: set.count,
@@ -212,6 +238,47 @@ export class Renderer {
     gl.bindVertexArray(null);
     this.oceanVao = vao;
 
+    // Cloud noise: a tiling volume, filled once on the GPU a slice at a time.
+    this.pClouds = new Program(gl, 'clouds', FULLSCREEN_VS, CLOUDS_FS);
+    this.cloudNoise = createTexture(gl, {
+      target: gl.TEXTURE_3D, width: NOISE_SIZE, height: NOISE_SIZE, depth: NOISE_SIZE,
+      internalFormat: gl.RG8, format: gl.RG, type: gl.UNSIGNED_BYTE, min: gl.LINEAR, mag: gl.LINEAR, wrap: gl.REPEAT,
+    });
+    const pNoise = new Program(gl, 'cloud-noise', FULLSCREEN_VS, CLOUD_NOISE_FS);
+    pNoise.use();
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    for (let z = 0; z < NOISE_SIZE; z++) {
+      const slice = createTarget(gl, NOISE_SIZE, NOISE_SIZE, [this.cloudNoise], null, z);
+      bindTarget(gl, slice);
+      pNoise.f('uSlice', (z + 0.5) / NOISE_SIZE);
+      drawFullscreen(gl);
+      deleteTarget(gl, slice, false);
+    }
+    gl.deleteProgram(pNoise.handle);
+
+    // Rain, snow and splashes: one instanced quad, positioned entirely in the vertex shader.
+    this.pPrecip = new Program(gl, 'precip', PRECIP_VS, PRECIP_FS);
+    this.pSplash = new Program(gl, 'splash', PRECIP_VS, PRECIP_FS, { SPLASH: true });
+    const qvao = gl.createVertexArray();
+    const qvbo = gl.createBuffer();
+    if (!qvao || !qvbo) throw new Error('could not create the particle quad');
+    gl.bindVertexArray(qvao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, qvbo);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, 0, 0.5, 0, -0.5, 1, 0.5, 1]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+    this.quadVao = qvao;
+    this.heightTex = createTexture(gl, {
+      width: world.sx, height: world.sz, internalFormat: gl.R8, format: gl.RED, type: gl.UNSIGNED_BYTE, data: world.heightmap,
+      min: gl.NEAREST, mag: gl.NEAREST,
+    });
+
+    this.entities = new EntityRenderer(gl);
+    this.pEntity = new Program(gl, 'entity', ENTITY_VS, ENTITY_FS);
+    this.pEntityShadow = new Program(gl, 'entity-shadow', ENTITY_VS, ENTITY_SHADOW_FS, { SHADOW: true });
+
     this.pOverlay = new Program(gl, 'overlay', OVERLAY_VS, OVERLAY_FS);
     const ovao = gl.createVertexArray();
     const ovbo = gl.createBuffer();
@@ -229,6 +296,20 @@ export class Renderer {
 
   setMesh(section: number, mesh: MeshOutput | null): void {
     this.sections.set(section, mesh);
+  }
+
+  /**
+   * Where a world point falls on screen as of the last frame: x and y in 0..1
+   * from the top left, and its distance along the view. Null if behind the eye.
+   */
+  project(x: number, y: number, z: number): { x: number; y: number; depth: number } | null {
+    const m = this.viewProj;
+    const w = (m[3] as number) * x + (m[7] as number) * y + (m[11] as number) * z + (m[15] as number);
+    if (w <= 0.05) return null;
+    const cx = ((m[0] as number) * x + (m[4] as number) * y + (m[8] as number) * z + (m[12] as number)) / w;
+    const cy = ((m[1] as number) * x + (m[5] as number) * y + (m[9] as number) * z + (m[13] as number)) / w;
+    if (Math.abs(cx) > 1.1 || Math.abs(cy) > 1.1) return null;
+    return { x: cx * 0.5 + 0.5, y: 0.5 - cy * 0.5, depth: w };
   }
 
   /** Match the internal targets to the canvas. Cheap when nothing changed. */
@@ -281,6 +362,14 @@ export class Renderer {
       this.bloom.push(createTarget(gl, bw, bh, [tex(bw, bh, gl.R11F_G11F_B10F, gl.RGB, gl.HALF_FLOAT, gl.LINEAR)]));
     }
     this.ldr = createTarget(gl, w, h, [tex(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR)]);
+    if (this.clouds) this.clouds.forEach((t) => deleteTarget(gl, t));
+    const qw = Math.max(1, w >> 2);
+    const qh = Math.max(1, h >> 2);
+    this.clouds = [
+      createTarget(gl, qw, qh, [tex(qw, qh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR)]),
+      createTarget(gl, qw, qh, [tex(qw, qh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR)]),
+    ];
+    this.cloudFresh = true;
   }
 
   render(cam: Camera, env: Environment, info: FrameInfo): void {
@@ -341,7 +430,7 @@ export class Renderer {
     u.vec('weather', info.weather.wetness, info.weather.snow, info.weather.rain, info.weather.cloud);
     u.vec('screen', w, h, 1 / w, 1 / h);
     u.vec('clip', NEAR, FAR, this.world.seaLevel - 1 + 15 / 16, env.exposure);
-    u.vec('grassTint', env.grassTint[0], env.grassTint[1], env.grassTint[2]);
+    u.vec('grassTint', env.grassTint[0], env.grassTint[1], env.grassTint[2], env.preExposure);
     u.vec('foliageTint', env.foliageTint[0], env.foliageTint[1], env.foliageTint[2], env.autumn);
     u.vec('birchTint', env.birchTint[0], env.birchTint[1], env.birchTint[2]);
     u.vec('world', this.world.sx, this.world.sz, env.night, env.flash);
@@ -358,6 +447,31 @@ export class Renderer {
     bindTarget(gl, this.skyLut);
     this.pSkyLut.use().f('uSunIntensity', env.sunIntensity).f('uMoonIntensity', env.moonDir.y > -0.2 ? env.moonIntensity : 0);
     drawFullscreen(gl);
+
+    // --- rain heightmap -----------------------------------------------------
+    if (this.heightsDirty && this.frameIndex - this.heightsAge > 15) {
+      gl.bindTexture(gl.TEXTURE_2D, this.heightTex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.world.sx, this.world.sz, gl.RED, gl.UNSIGNED_BYTE, this.world.heightmap);
+      this.heightsDirty = false;
+      this.heightsAge = this.frameIndex;
+    }
+
+    // --- clouds -------------------------------------------------------------
+    const clouds = this.clouds as [Target, Target];
+    this.cloudFlip ^= 1;
+    const cloudNow = clouds[this.cloudFlip] as Target;
+    const cloudPrev = clouds[this.cloudFlip ^ 1] as Target;
+    bindTarget(gl, cloudNow);
+    this.pClouds.use()
+      .tex('uCloudNoise', 0, gl.TEXTURE_3D, this.cloudNoise)
+      .tex('uSkyLut', 1, gl.TEXTURE_2D, this.skyLut.colors[0] as WebGLTexture)
+      .tex('uHistory', 2, gl.TEXTURE_2D, cloudPrev.colors[0] as WebGLTexture)
+      .m4('uPrevViewProj', this.prevViewProj)
+      .f('uBlend', this.cloudFresh ? 1 : 0.14);
+    drawFullscreen(gl);
+    this.cloudFresh = false;
+    this.prevViewProj.set(this.viewProj);
 
     // --- shadow cascades ----------------------------------------------------
     const k = env.keyDir;
@@ -384,6 +498,11 @@ export class Renderer {
         gl.disable(gl.CULL_FACE);
         this.pShadowCutout.use().m4('uLightViewProj', m).tex('uTiles', 0, gl.TEXTURE_2D_ARRAY, this.tiles);
         this.sections.draw(this.casters, 1, this.pShadowCutout.loc('uOrigin'));
+        // Creatures cast shadows in all but the far cascade, where they would be smaller than a texel.
+        if (i < 3 && this.entities.count > 0) {
+          this.pEntityShadow.use().m4('uLightViewProj', m);
+          this.entities.draw();
+        }
       }
       gl.disable(gl.POLYGON_OFFSET_FILL);
       gl.colorMask(true, true, true, true);
@@ -407,6 +526,15 @@ export class Renderer {
     quads += this.sections.draw(this.visible, 1, this.pGbufferCutout.loc('uOrigin'));
     stats.triangles += quads * 2;
     stats.drawCalls += this.visible.length * 2;
+    // Creatures and loose bodies.
+    if (this.entities.count > 0) {
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+      this.pEntity.use();
+      this.entities.draw();
+      stats.triangles += this.entities.count * 12;
+      stats.drawCalls++;
+    }
 
     // --- ambient occlusion --------------------------------------------------
     gl.disable(gl.DEPTH_TEST);
@@ -433,7 +561,9 @@ export class Renderer {
     p.tex('uLight', 2, gl.TEXTURE_2D, gbuffer.colors[2] as WebGLTexture);
     p.tex('uDepth', 3, gl.TEXTURE_2D, gbuffer.depth);
     p.tex('uAO', 4, gl.TEXTURE_2D, aoTex);
-    p.tex('uClouds', 5, gl.TEXTURE_2D, this.noCloud);
+    p.tex('uClouds', 5, gl.TEXTURE_2D, cloudNow.colors[0] as WebGLTexture);
+    p.tex('uCloudNoise', 8, gl.TEXTURE_3D, this.cloudNoise);
+    p.tex('uHeightTex', 9, gl.TEXTURE_2D, this.heightTex);
     p.tex('uSkyLut', 6, gl.TEXTURE_2D, this.skyLut.colors[0] as WebGLTexture);
     p.tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
     gl.uniformMatrix4fv(p.loc('uShadowMat'), false, this.shadows.matrices);
@@ -463,6 +593,7 @@ export class Renderer {
       prog.tex('uTiles', 2, gl.TEXTURE_2D_ARRAY, this.tiles);
       prog.tex('uSkyLut', 6, gl.TEXTURE_2D, this.skyLut.colors[0] as WebGLTexture);
       prog.tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
+      prog.tex('uCloudNoise', 8, gl.TEXTURE_3D, this.cloudNoise);
       gl.uniformMatrix4fv(prog.loc('uShadowMat'), false, this.shadows.matrices);
       prog.f4v('uShadowSplit', this.shadows.splits).f4v('uShadowTexel', this.shadows.texel).f('uShadowRes', this.shadows.res);
       if (prog === this.pOcean) {
@@ -486,6 +617,22 @@ export class Renderer {
       gl.bindVertexArray(this.overlayVao);
       gl.drawArrays(gl.TRIANGLES, 0, 36);
       stats.drawCalls++;
+    }
+    // Rain or snow, and the rings where rain lands. Premultiplied, so streaks add light without hiding the scene.
+    if (info.weather.rain > 0.02 && !info.underwater) {
+      gl.depthMask(false);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.bindVertexArray(this.quadVao);
+      const snowing = info.weather.snowing ? 1 : 0;
+      const drops = Math.round((snowing ? 5000 : 9000) * Math.min(1, info.weather.rain * 1.3));
+      this.pPrecip.use().tex('uHeightTex', 0, gl.TEXTURE_2D, this.heightTex).f('uCount', drops).f('uSnow', snowing);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, drops);
+      if (!snowing) {
+        const rings = Math.round(700 * Math.min(1, info.weather.rain * 1.3));
+        this.pSplash.use().tex('uHeightTex', 0, gl.TEXTURE_2D, this.heightTex).f('uCount', rings).f('uSnow', 0);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, rings);
+      }
+      stats.drawCalls += 2;
     }
     gl.disable(gl.BLEND);
     gl.disable(gl.DEPTH_TEST);

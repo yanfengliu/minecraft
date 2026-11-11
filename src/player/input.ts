@@ -68,8 +68,9 @@ export class Input {
     if (this.locked) document.exitPointerLock();
   }
 
+  /** True while a key is held; always false while a panel has the keyboard. */
   down(code: string): boolean {
-    return this.keys.has(code);
+    return this.enabled && this.keys.has(code);
   }
 
   /** True once for each physical key press. */
