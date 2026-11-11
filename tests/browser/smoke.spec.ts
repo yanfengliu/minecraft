@@ -218,6 +218,64 @@ test('ambient occlusion leaves a flat, high-contrast wall alone', async ({ page 
   expect(Math.abs(r.on - r.off) / r.off).toBeLessThan(0.03);
 });
 
+test('creatures and loose bodies reach the screen', async ({ page }) => {
+  await boot(page);
+  // Counting boxes handed to the renderer would pass with nothing drawn, so this reads pixels: the
+  // same view with and without a row of creatures standing in it, and with a block hung in the air.
+  const r = await page.evaluate(async () => {
+    const t = window.__tidewick!;
+    const g = t.game!;
+    t.setHour(12);
+    t.setWeather('clear');
+    const s = g.info.spawn;
+    const sx = Math.floor(s.x);
+    const sz = Math.floor(s.z);
+    const floor = Math.floor(s.y) + 38;
+    // A stone stage well above the trees for the creatures to stand on, seen from its near edge looking along it.
+    const stone = t.block('stone');
+    for (let x = sx + 3; x <= sx + 10; x++) for (let z = sz - 13; z <= sz + 13; z++) g.world.set(x, floor, z, stone);
+    t.look(sx + 0.5, floor + 1 + 1.62, sz + 0.5, 90, -4);
+    // The stage is meshed by workers, whose answers arrive only when this script yields.
+    for (let i = 0; i < 100; i++) {
+      t.step(0.05);
+      await new Promise((done) => setTimeout(done, 30));
+      if (i > 3 && g.pool.pending === 0) break;
+    }
+    t.step(1);
+    g.paused = true;
+    const grid = (): number[] => t.probe(32, 18);
+    const changed = (a: number[], b: number[]): number => {
+      let n = 0;
+      for (let i = 0; i < a.length; i += 3) if (Math.abs(a[i]! - b[i]!) + Math.abs(a[i + 1]! - b[i + 1]!) + Math.abs(a[i + 2]! - b[i + 2]!) > 40) n++;
+      return n;
+    };
+    const empty = grid();
+    const still = changed(empty, grid());
+    // One of every kind of creature, in two rows across the stage.
+    g.showLineUp('idle');
+    t.step(0.05);
+    const withCreatures = changed(empty, grid());
+    g.lineUp.length = 0;
+    t.step(0.05);
+    const cleared = changed(empty, grid());
+    // A wall of blocks hung in the air eight metres ahead, held there by nothing but the pause.
+    for (let dy = 0; dy <= 4; dy++) for (let dz = -3; dz <= 3; dz++) g.physics.spawnBlock(stone, sx + 8.5, floor + 1.5 + dy, sz + 0.5 + dz);
+    t.step(0.05);
+    const withBodies = changed(empty, grid());
+    return { still, withCreatures, cleared, withBodies };
+  });
+  console.log('drawn', JSON.stringify(r));
+  // The empty stage is steady from one frame to the next...
+  expect(r.still).toBeLessThanOrEqual(4);
+  // ...thirty creatures five to seven metres off change a good part of it, and it comes back when they go...
+  // (With the draw call removed their shadows alone still changed 19 cells and the blocks' 17, against
+  // 85 and 114 drawn: the limits sit between.)
+  expect(r.withCreatures).toBeGreaterThan(45);
+  expect(r.cleared).toBeLessThanOrEqual(4);
+  // ...and so do thirty-five blocks a metre across.
+  expect(r.withBodies).toBeGreaterThan(60);
+});
+
 test('things fall: a block, a pile of sand, and a dropped loaf the player picks up', async ({ page }) => {
   const errors = await boot(page);
   const r = await page.evaluate(() => {
@@ -426,7 +484,6 @@ test('the full island holds a village and still fits the frame budget', async ({
   expect(life.wild).toBeGreaterThanOrEqual(150);
   expect(life.wildMoved).toBeGreaterThanOrEqual(20);
   for (const kind of ['deer', 'rabbit', 'boar', 'fox', 'wolf', 'songbird', 'crow', 'gull', 'duck', 'fish']) expect(life.census[kind], kind).toBeGreaterThan(0);
-  // Looking down the street at half past nine there are people in view, each a dozen boxes or so.
-  expect(life.boxes).toBeGreaterThan(60);
+  // That they are drawn is checked by pixels in 'creatures and loose bodies reach the screen'.
   expect(errors).toEqual([]);
 });

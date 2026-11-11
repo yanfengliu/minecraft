@@ -86,6 +86,32 @@ describe('weather', () => {
     expect(coldest).toBeGreaterThan(-20);
   });
 
+  it('carries on changing after the clock is set back or forward', () => {
+    const clock = new Clock(12, 3);
+    const weather = new Weather(new Rng(11), clock);
+    const changesIn = (hours: number): number => {
+      let n = 0;
+      let last = weather.regime;
+      for (let i = 0; i < (hours * 60) / SIM_DT; i++) {
+        clock.advance(SIM_DT);
+        weather.update(SIM_DT);
+        if (weather.regime !== last) {
+          n++;
+          last = weather.regime;
+        }
+      }
+      return n;
+    };
+    expect(changesIn(24)).toBeGreaterThan(2);
+    // Two days back: without a resync the next change would lie two days off and the sky would stand still.
+    clock.time -= 2 * DAY_SECONDS;
+    weather.resync();
+    expect(changesIn(24)).toBeGreaterThan(2);
+    clock.time += 7 * DAY_SECONDS;
+    weather.resync();
+    expect(changesIn(24)).toBeGreaterThan(2);
+  });
+
   it('lays mist on some clear, still dawns and clears it by midday', () => {
     const clock = new Clock(0, 0);
     const weather = new Weather(new Rng(3), clock);

@@ -261,7 +261,7 @@ export class Hud {
         if (name === 'scale') { g.timeScale = Number(arg); g.paused = false; }
         else if (name === 'pause') g.paused = !g.paused;
         else if (name === 'hour') g.setHour(Number(arg));
-        else if (name === 'day') g.clock.time += Number(arg) * 1440;
+        else if (name === 'day') g.skipDays(Number(arg));
         else if (name === 'weather') g.setWeather(arg ? (arg as (typeof REGIMES)[number]) : null);
       },
     };

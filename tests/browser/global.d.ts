@@ -22,7 +22,10 @@ declare global {
         } | null;
         pool: { pending: number };
         fps: number;
+        paused: boolean;
         stop(): void;
+        showLineUp(anim?: string): void;
+        lineUp: unknown[];
         world: { get(x: number, y: number, z: number): number; set(x: number, y: number, z: number, state: number): boolean };
         renderer: { settings: { ssao: boolean; shafts: boolean; bloom: boolean; fxaa: boolean }; entities: { count: number } };
         focusPrompt(): string;

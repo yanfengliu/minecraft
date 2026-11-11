@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../core/rng';
-import { B, IS_LEAVES, IS_LOG, WATER_LEVEL, waterState } from '../world/blocks';
+import { watchAttachments } from '../world/attach';
+import { B, IS_LEAVES, IS_LOG, WATER_LEVEL, doorState, waterState } from '../world/blocks';
 import { growTree } from '../world/gen/trees';
-import { item } from '../world/items';
+import { ITEMS, dropOf, item } from '../world/items';
 import { World, createFlatWorld } from '../world/world';
 import { Physics, RIGID_DT, type BodyView, type PhysicsEvent, type PhysicsOptions } from './index';
 import type { RigidBodies } from './rigid';
@@ -227,6 +228,45 @@ describe('physics', () => {
     expect(inGrid + inBodies + asItems).toBe(total);
     console.log(`physics collapse: ${total} blocks left as ${piecesAtStart} pieces, were ${most} bodies at most; after 12 s ${inGrid} are back in the grid, ${inBodies} in bodies, ${asItems} items`);
     physics.dispose();
+  });
+
+  it('does not double a door, a torch or a lantern when the platform they stand on collapses', async () => {
+    // As in the game: fittings that lose their support are popped off and dropped by a watcher on the
+    // world, at the moment physics takes the block under them. Whichever of the two gets to a fitting
+    // first, there must be exactly one of it afterwards. Tried with the platform's cells traced from
+    // each end, since the order physics removes them in decides who gets there first.
+    for (const cutX of [20, 26]) {
+      const { world, physics } = await setup({ cantilever: false });
+      const dropped: number[] = [];
+      const stop = watchAttachments(world, (x, y, z, state) => {
+        const d = dropOf(state);
+        if (d) {
+          dropped.push(d.id);
+          physics.spawnItem(d.id, 1, x + 0.5, y + 0.5, z + 0.5);
+        }
+      });
+      const deck = TOP + 6;
+      for (let z = 20; z < 23; z++) for (let x = 20; x < 27; x++) world.setRaw(x, deck, z, B.oak_planks);
+      for (let y = TOP; y < deck; y++) world.setRaw(cutX, y, 21, B.cobble);
+      world.setRaw(22, deck + 1, 21, doorState(0, false, false));
+      world.setRaw(22, deck + 2, 21, doorState(0, true, false));
+      world.setRaw(24, deck + 1, 21, B.torch);
+      world.setRaw(25, deck + 1, 21, B.lantern);
+      world.set(cutX, TOP + 2, 21, B.air);
+      run(physics, 10);
+
+      const want = [item('door').id, item('torch').id, item('lantern').id];
+      for (const id of want) {
+        // A fitting that is still a block (in the grid or in a piece of rubble) counts as one, as does each item lying about.
+        const drop = (s: number): boolean => dropOf(s)?.id === id;
+        const blocks = count(world, drop) + cellsOf(physics.bodies, drop);
+        const items = physics.bodies.filter((b) => b.kind === 'item' && b.item === id).reduce((n, b) => n + b.count, 0);
+        expect(blocks + items, `${item(ITEMS[id]!.name).label} after cutting the pillar at x = ${cutX}`).toBe(1);
+      }
+      expect(dropped.length).toBeGreaterThan(0);
+      stop();
+      physics.dispose();
+    }
   });
 
   it('runs sand, water and a floating block together through the facade', async () => {

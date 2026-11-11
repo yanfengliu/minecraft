@@ -9,9 +9,7 @@ import {
 import { ITEMS, dropOf, item } from '../world/items';
 import { type RayHit, raycast } from '../world/raycast';
 import type { World } from '../world/world';
-import type { Input } from './input';
 import type { Inventory } from './inventory';
-import type { Player } from './player';
 
 export const REACH = 5.2;
 
@@ -21,7 +19,33 @@ export interface InteractionHooks {
   placed?(x: number, y: number, z: number, state: number): void;
   /** Give other systems first refusal on a right click (talking to a villager, say). Return true if handled. */
   use?(hit: RayHit | null): boolean;
+  /**
+   * Something came off a block that stays where it is (berries off a bush): put `count` of `item`
+   * into the world at that cell. Without this hook it goes straight into the pack, and only if it fits.
+   */
+  gained?(x: number, y: number, z: number, item: number, count: number): void;
 }
+
+/** The part of the input the interaction reads; `Input` satisfies it, and a test can stand in for it. */
+export interface Controls {
+  readonly buttons: ReadonlySet<number>;
+  readonly enabled: boolean;
+  click(button: number): boolean;
+  hit(code: string): boolean;
+  consumeWheel(): number;
+}
+
+/** Where the player is and where they are looking; `Player` satisfies it. */
+export interface Aim {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly yaw: number;
+  readonly eye: { x: number; y: number; z: number };
+  readonly look: { x: number; y: number; z: number };
+}
+
+const BERRIES_PER_BUSH = 2;
 
 /** Facing index (0 N, 1 E, 2 S, 3 W) the player is looking toward. */
 function facingOf(yaw: number): number {
@@ -41,14 +65,15 @@ export class Interaction {
   private placeCooldown = 0;
 
   /** `reach` shortens the arm when something that is not a block (a loose body) is in the way. */
-  update(dt: number, input: Input, player: Player, world: World, inv: Inventory, hooks: InteractionHooks = {}, reach = REACH): void {
+  update(dt: number, input: Controls, player: Aim, world: World, inv: Inventory, hooks: InteractionHooks = {}, reach = REACH): void {
     const e = player.eye;
     const l = player.look;
-    this.target = raycast(world, e.x, e.y, e.z, l.x, l.y, l.z, Math.min(reach, REACH));
+    const aim = (): RayHit | null => raycast(world, e.x, e.y, e.z, l.x, l.y, l.z, Math.min(reach, REACH));
+    this.target = aim();
     this.placeCooldown = Math.max(0, this.placeCooldown - dt);
 
     // --- breaking ---
-    const t = this.target;
+    let t = this.target;
     if (input.buttons.has(0) && t && input.enabled) {
       if (!this.breaking || this.breaking.x !== t.x || this.breaking.y !== t.y || this.breaking.z !== t.z) {
         this.breaking = { x: t.x, y: t.y, z: t.z };
@@ -61,6 +86,9 @@ export class Interaction {
           this.breakBlock(world, inv, t, hooks);
           this.breaking = null;
           this.progress = 0;
+          // The block aimed at is gone. Whatever else happens this frame (a right click) must act on what
+          // is there now: used on the old hit, a door that had just been broken was written back.
+          t = this.target = aim();
         }
       }
     } else {
@@ -72,7 +100,7 @@ export class Interaction {
     if ((input.click(2) || (input.buttons.has(2) && this.placeCooldown === 0)) && input.enabled) {
       if (input.click(2) && hooks.use?.(t)) {
         this.placeCooldown = 0.25;
-      } else if (t && input.click(2) && this.useBlock(world, inv, t)) {
+      } else if (t && input.click(2) && this.useBlock(world, inv, t, hooks)) {
         this.placeCooldown = 0.25;
       } else if (t && this.placeCooldown === 0) {
         if (this.place(world, inv, player, t, hooks)) this.placeCooldown = 0.22;
@@ -92,7 +120,11 @@ export class Interaction {
     // Ripe crops give a harvest; leaves now and then give a sapling.
     const family = (BLOCKS[state] as (typeof BLOCKS)[number]).family;
     if (drop && (family === 'wheat' || family === 'barley' || family === 'turnip' || family === 'cabbage')) drop.count = 2;
-    if (family === 'berry_bush' && state === B.berry_bush + 1) inv.add(item('berries').id, 2);
+    // A ripe bush that is grubbed up still gives its berries (they are lost only if nobody can take them).
+    if (family === 'berry_bush' && state === B.berry_bush + 1) {
+      if (hooks.gained) hooks.gained(t.x, t.y, t.z, item('berries').id, BERRIES_PER_BUSH);
+      else inv.add(item('berries').id, Math.min(BERRIES_PER_BUSH, inv.room(item('berries').id)));
+    }
     if (!drop && family.endsWith('_leaves') && (t.x * 7 + t.y * 13 + t.z * 31) % 11 === 0) {
       drop = { item: item(family.replace('_leaves', '_sapling')).id, count: 1 };
     }
@@ -113,7 +145,7 @@ export class Interaction {
   }
 
   /** Right click on something that responds: doors, gates, lights, berry bushes. */
-  private useBlock(world: World, inv: Inventory, t: RayHit): boolean {
+  private useBlock(world: World, inv: Inventory, t: RayHit, hooks: InteractionHooks): boolean {
     const s = t.state;
     if (isDoor(s)) {
       const v = s - B.door;
@@ -136,14 +168,19 @@ export class Interaction {
       return true;
     }
     if (s === B.berry_bush + 1) {
-      inv.add(item('berries').id, 2);
+      const berries = item('berries').id;
+      // Picked into the world for the game to hand over, or into the pack; never stripped for nothing.
+      if (hooks.gained) hooks.gained(t.x, t.y, t.z, berries, BERRIES_PER_BUSH);
+      else if (inv.room(berries) >= BERRIES_PER_BUSH) inv.add(berries, BERRIES_PER_BUSH);
+      // No room: the bush keeps its berries, and the click was still meant for it, not for placing a block.
+      else return true;
       world.set(t.x, t.y, t.z, B.berry_bush);
       return true;
     }
     return false;
   }
 
-  private place(world: World, inv: Inventory, player: Player, t: RayHit, hooks: InteractionHooks): boolean {
+  private place(world: World, inv: Inventory, player: Aim, t: RayHit, hooks: InteractionHooks): boolean {
     const held = inv.held;
     if (!held) return false;
     const def = ITEMS[held.item];

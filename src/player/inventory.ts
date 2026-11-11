@@ -23,6 +23,14 @@ export class Inventory {
     return n;
   }
 
+  /** How many more of an item the pack can take: space in its stacks plus every empty slot. */
+  room(itemId: number): number {
+    const max = ITEMS[itemId]?.stack ?? 99;
+    let n = 0;
+    for (const s of this.slots) n += !s ? max : s.item === itemId ? max - s.count : 0;
+    return n;
+  }
+
   /** Add items, topping up existing stacks first. Returns how many did not fit. */
   add(itemId: number, count: number): number {
     const max = ITEMS[itemId]?.stack ?? 99;

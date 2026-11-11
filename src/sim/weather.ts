@@ -152,6 +152,12 @@ export class Weather implements WeatherView {
     else this.nextChange = this.clock.time + this.rng.range(0.5, 1.5) * HOUR_SECONDS;
   }
 
+  /** The clock was set, not stepped: plan the next change of weather and the next lightning from the new time. */
+  resync(): void {
+    if (!this.forced) this.nextChange = this.clock.time + this.rng.range(0.5, 1.5) * HOUR_SECONDS;
+    if (this.nextStrike !== Infinity) this.nextStrike = this.clock.time + this.rng.range(8, 30);
+  }
+
   private enter(regime: Regime): void {
     this.regime = regime;
     const t = TARGETS[regime];

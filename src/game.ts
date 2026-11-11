@@ -19,7 +19,7 @@ import { MeshPool } from './render/meshPool';
 import { Particles } from './render/particles';
 import { type Camera, type FrameInfo, Renderer } from './render/renderer';
 import { type AnimState, type EntityView, type InspectInfo, type VillagePlan, createBasicActions } from './sim/api';
-import { Clock, SIM_DT } from './sim/clock';
+import { Clock, DAY_SECONDS, HOUR_SECONDS, SIM_DT } from './sim/clock';
 import { type Regime, Weather } from './sim/weather';
 import { Hud } from './ui/hud';
 import { watchAttachments } from './world/attach';
@@ -43,6 +43,8 @@ export interface Speech {
   kind: 'bubble' | 'tag';
 }
 
+/** How far away a creature can be looked at and spoken to, in metres, when no block is nearer. */
+const CREATURE_REACH = 6.5;
 /** How far from the camera something has to be before its particles are not worth throwing, in metres. */
 const EFFECT_RANGE = 90;
 /** Simulation steps one frame may run: 4 simulated seconds, enough for 120x time-lapse at 30 frames a second. */
@@ -263,9 +265,24 @@ export class Game {
     this.weather.force(regime);
   }
 
-  /** Jump the calendar to an hour of the current day (debugging and inspection). */
+  /** Turn the clock to an hour of the current day (the almanac, and inspection). */
   setHour(hour: number): void {
-    this.clock.time = this.clock.day * 1440 + hour * 60;
+    this.setClock(this.clock.day * DAY_SECONDS + hour * HOUR_SECONDS);
+  }
+
+  /** Move the calendar on by whole days without living through them. */
+  skipDays(days: number): void {
+    this.setClock(this.clock.time + days * DAY_SECONDS);
+  }
+
+  /**
+   * Set the clock rather than step it. Nothing is simulated for the time between: the village and the
+   * wildlife each notice the jump on their next tick and carry on from where they were, and the
+   * weather plans its next change from the new time.
+   */
+  private setClock(time: number): void {
+    this.clock.time = time;
+    this.weather.resync();
   }
 
   /** Stand one of every creature in a row in front of the player, each in the given pose. */
@@ -294,9 +311,13 @@ export class Game {
     return village.canTrade(who.id) ? 'Right-click to trade' : 'Right-click to talk';
   }
 
-  /** Right-click on a villager: trade if they are serving, otherwise pass the time of day. Returns whether there was anyone to greet. */
-  private greet(): boolean {
-    const who = this.focus;
+  /**
+   * Right-click on a villager: trade if they are serving, otherwise pass the time of day. Returns
+   * whether there was anyone to greet. Who is under the crosshair is worked out afresh: the player
+   * has turned since `focus` was last set, and a click must land on what they see now.
+   */
+  private greet(reach: number): boolean {
+    const who = pickCreature(this.seen, this.player.eye, this.player.look, reach);
     const village = this.life.village;
     if (!who || !village || (who.kind !== 'villager' && who.kind !== 'child')) return false;
     if (this.trade && village.canTrade(who.id)) {
@@ -379,7 +400,8 @@ export class Game {
       placed: () => {
         this.hand.swing = 1;
       },
-      use: () => this.greet(),
+      use: (hit) => this.greet(hit ? hit.t : CREATURE_REACH),
+      gained: (x, y, z, item, count) => this.drop(item, count, x, y, z),
     }, body ? body.distance : REACH);
     if (body && !this.interaction.target && this.input.buttons.has(0)) {
       if (this.rubble.id !== body.id) this.rubble = { id: body.id, held: 0 };
@@ -420,7 +442,7 @@ export class Game {
     }
     this.life.collect(this.seen);
     // A creature behind the block being aimed at is out of reach.
-    this.focus = pickCreature(this.seen, this.player.eye, this.player.look, t ? t.t : 6.5);
+    this.focus = pickCreature(this.seen, this.player.eye, this.player.look, t ? t.t : CREATURE_REACH);
 
     const eye = this.player.eye;
     const cam = this.camera;

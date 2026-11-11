@@ -3,9 +3,13 @@
 
 import type { EntityKind, EntityView } from '../sim/api';
 
-/** Rough standing height of each kind of creature in metres, for picking and for placing words above it. */
+/**
+ * Rough standing height of each kind of creature in metres at scale 1, for picking and for placing
+ * words above it; the height of a particular one is this times its `scale`. A child is the adult
+ * model drawn small (with a larger head), so its entry is the adult's and its scale does the rest.
+ */
 export const CREATURE_HEIGHT: Record<EntityKind, number> = {
-  villager: 1.8, child: 1.15, sheep: 0.9, cow: 1.3, chicken: 0.5, deer: 1.45, rabbit: 0.45, fox: 0.6, wolf: 0.95, boar: 0.85,
+  villager: 1.8, child: 1.8, sheep: 0.9, cow: 1.3, chicken: 0.5, deer: 1.45, rabbit: 0.45, fox: 0.6, wolf: 0.95, boar: 0.85,
   songbird: 0.3, crow: 0.35, gull: 0.35, duck: 0.4, fish: 0.3,
 };
 

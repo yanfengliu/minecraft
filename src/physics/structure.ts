@@ -263,13 +263,24 @@ export class Structure {
       for (let i = this.maxLeaves; i < leaves.length; i++) shed.push(leaves[i] as DetachedCell);
     }
     this.busy = true;
-    for (const c of body) w.set(c.x, c.y, c.z, AIR);
+    // Taking one cell out can make someone else take another: a door comes off its sill the moment the
+    // floor under it goes, and whoever watches fittings drops it as an item. A cell that no longer holds
+    // what was traced is therefore not part of the piece, or the door would exist twice.
+    const taken: DetachedCell[] = [];
+    for (const c of body) {
+      if (w.get(c.x, c.y, c.z) !== c.state) continue;
+      w.set(c.x, c.y, c.z, AIR);
+      taken.push(c);
+    }
+    body = taken;
     for (const c of shed) {
+      if (w.get(c.x, c.y, c.z) !== c.state) continue;
       w.set(c.x, c.y, c.z, AIR);
       this.host.emit({ type: 'burst', x: c.x + 0.5, y: c.y + 0.5, z: c.z + 0.5, state: c.state });
     }
     this.busy = false;
     this.dropFittings(cells);
+    if (body.length === 0) return;
     let cx = 0;
     let cy = 0;
     let cz = 0;
