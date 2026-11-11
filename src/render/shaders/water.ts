@@ -77,9 +77,11 @@ out vec4 oColor;
 
 const vec3 NORMALS[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
 
-// Slope of the water surface at p: a few long swells that run with the wind, and fine chop on top.
+// Slope of the water surface at p: a few long swells, and fine chop on top. The swells keep to fixed
+// headings (the wind sets how high they are, through 'chop', not which way they run): headed by the
+// wind of the moment, the whole pattern swung about the world's origin whenever the wind veered.
 vec2 waveSlope(vec2 p, float t, float chop, float distFade, float swellFade) {
-  vec2 wind = normalize(uWind.xy + vec2(1e-3, 0.0));
+  const vec2 wind = vec2(0.8, 0.6);
   vec2 g = vec2(0.0);
   float len = 13.0;
   float ang = 0.0;
@@ -99,8 +101,9 @@ vec2 waveSlope(vec2 p, float t, float chop, float distFade, float swellFade) {
     ang += 1.1 + float(i) * 0.7;
   }
   g *= mix(0.3, 1.0, swellFade);
-  // Fine ripples from moving noise, faded with distance so the far sea does not shimmer.
-  vec2 q = p * 1.7 + wind * t * 0.9;
+  // Fine ripples from moving noise, faded with distance so the far sea does not shimmer. They ride
+  // where the wind so far has carried them (uDrift), never the wind of the moment times the time elapsed.
+  vec2 q = p * 1.7 + uDrift.xy * 0.07 + vec2(0.31, 0.17) * t;
   float e = 0.12;
   float n0 = valueNoise(q) + 0.5 * valueNoise(q * 2.3 - t * 0.7);
   float nx = valueNoise(q + vec2(e, 0.0)) + 0.5 * valueNoise((q + vec2(e, 0.0)) * 2.3 - t * 0.7);
