@@ -4,7 +4,9 @@ An original first-person voxel sandbox for the browser: a bounded island with a 
 
 ## Status
 
-Under construction. What exists today is the base the game is being built on: the block and item registries, world storage, voxel light, the calendar, sky and weather models, and the contracts the simulations are written against. The page boots a WebGL2 context and draws nothing yet. This section is updated as each milestone lands; [the devlog](docs/devlog/summary.md) has the history and [the work plan](docs/work/0_genesis/plan.md) has what is open.
+Under construction. Today you can walk, jump, swim and fly (F) around a generated island with a mountain, a lake, a river and forests, break blocks (hold left mouse) and place them (right mouse, number keys pick the slot), under a sun and moon that cross a physically based sky. Rendering has cascaded shadows, baked sky and torch light, ambient occlusion, refractive and reflective water, bloom and tone mapping. Not there yet: clouds and weather effects, the village and its residents, wildlife, the physics systems, and any interface beyond the bare view. This section is updated as each milestone lands; [the devlog](docs/devlog/summary.md) has the history and [the work plan](docs/work/0_genesis/plan.md) has what is open.
+
+Add `?size=256` to the address for a quarter-size island that loads in a second, and `?seed=7` for a different one.
 
 ## Running it
 

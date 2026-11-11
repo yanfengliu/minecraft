@@ -425,7 +425,8 @@ export const B = {
   mushroom_brown: plant('mushroom_brown', 'mushroom_brown', { wind: WIND_NONE, drop: 'mushroom' }),
   mushroom_red: plant('mushroom_red', 'mushroom_red', { wind: WIND_NONE }),
   reeds: plant('reeds', 'reeds'),
-  seagrass: plant('seagrass', 'seagrass'),
+  /** Grows under water: the cell counts as source water for light, swimming and the fluid model. */
+  seagrass: plant('seagrass', 'seagrass', { waterLevel: 16, waterSource: true, lightOpacity: 2, placeable: false }),
   berry_bush: litPair('berry_bush',
     { shape: SHAPE_CROSS, layer: LAYER_CUTOUT, tiles: all('berry_bush'), mat: MAT.plant, natural: true, wind: WIND_PLANT, collision: 'none' },
     { shape: SHAPE_CROSS, layer: LAYER_CUTOUT, tiles: all('berry_bush_ripe'), mat: MAT.plant, natural: true, wind: WIND_PLANT, collision: 'none' }),

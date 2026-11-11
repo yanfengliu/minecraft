@@ -33,6 +33,7 @@ Layers, lowest first. A layer may import only from layers above it in this list.
 - `src/physics` — fluid, loose blocks, structure, rigid bodies.
 - `src/mesh` — section meshing (runs in workers).
 - `src/render`, `src/player`, `src/ui` — WebGL2 renderer, first-person controller, DOM interface.
+- `src/workers` — the worker entry points (generation, meshing); thin glue around headless code.
 - `src/game.ts`, `src/main.ts` — wiring and the loop.
 
 `core`, `world`, `sim`, `physics` and `mesh` are headless: no DOM, no renderer imports, usable from workers and from Vitest in Node.

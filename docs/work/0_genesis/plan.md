@@ -36,7 +36,7 @@ Dependencies and architecture calls the owner delegated are recorded in [the spe
 ## Implementation steps
 
 - [x] M0 — Toolchain, gates, registries, world storage, light, walkability, clock, sky, weather, contracts, spec. Session.
-- [ ] M1 — Island generation, meshing, the deferred renderer, sky, water, the player and block editing. Session.
+- [x] M1 — Island generation, meshing, the deferred renderer, sky, water, the player and block editing. Session.
 - [ ] Village simulation and pathfinding, headless with soak tests. Delegated worker, branch from M0.
 - [ ] Wildlife simulation, headless with soak tests. Delegated worker, branch from M0.
 - [ ] Physics: fluid, loose blocks, structure, rigid bodies, headless with tests. Delegated worker, branch from M0.

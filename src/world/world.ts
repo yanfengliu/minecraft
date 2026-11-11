@@ -215,19 +215,33 @@ export class World {
     return -1;
   }
 
-  recomputeHeightmap(): void {
-    const { sx, sz, sy } = this;
-    for (let z = 0; z < sz; z++) {
-      for (let x = 0; x < sx; x++) {
-        let h = 0;
-        for (let y = sy - 1; y >= 0; y--) {
-          if (BLOCKS_RAIN[this.get(x, y, z)]) {
-            h = y + 1;
-            break;
-          }
-        }
-        this.heightmap[z * sx + x] = h;
+  /**
+   * y of the highest cell in a column whose state has a non-zero entry in
+   * `table`, or -1. Skips uniform sections whole, so scanning from the sky
+   * down costs what the terrain costs, not what the air above it would.
+   */
+  topWhere(x: number, z: number, table: Uint8Array): number {
+    const sxi = x >> 5;
+    const szi = z >> 5;
+    const base = ((z & 31) << 5) | (x & 31);
+    for (let syi = this.nsy - 1; syi >= 0; syi--) {
+      const si = (syi * this.nsz + szi) * this.nsx + sxi;
+      const s = this.blocks[si];
+      if (!s) {
+        if (table[this.uniform[si] as number]) return syi * 32 + 31;
+        continue;
       }
+      for (let ly = 31; ly >= 0; ly--) {
+        if (table[s[(ly << 10) | base] as number]) return syi * 32 + ly;
+      }
+    }
+    return -1;
+  }
+
+  recomputeHeightmap(): void {
+    const { sx, sz } = this;
+    for (let z = 0; z < sz; z++) {
+      for (let x = 0; x < sx; x++) this.heightmap[z * sx + x] = this.topWhere(x, z, BLOCKS_RAIN) + 1;
     }
   }
 

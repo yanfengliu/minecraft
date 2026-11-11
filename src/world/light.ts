@@ -100,11 +100,7 @@ export class LightEngine {
     // 1. Per column: the highest cell that is not perfectly clear. Everything above it sees the whole sky.
     const top = new Int16Array(sx * sz);
     for (let z = 0; z < sz; z++) {
-      for (let x = 0; x < sx; x++) {
-        let y = sy - 1;
-        while (y >= 0 && LIGHT_OPACITY[w.get(x, y, z)] === 0) y--;
-        top[z * sx + x] = y;
-      }
+      for (let x = 0; x < sx; x++) top[z * sx + x] = w.topWhere(x, z, LIGHT_OPACITY);
     }
 
     // 2. Reset every section: fully lit above the column tops, dark below.
