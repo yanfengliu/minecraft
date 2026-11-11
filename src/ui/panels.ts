@@ -48,14 +48,15 @@ export function ledgerPanel(game: Game, icons: Icons): Panel {
         const h = g.history;
         const was = h.length > 1 ? (h[h.length - 2] as number) : g.price;
         const trend = g.price > was * 1.02 ? '▲' : g.price < was * 0.98 ? '▼' : '';
-        return `<tr><td>${icon(icons, item(g.good).id)}${esc(g.label)}</td><td class="num">${money(g.price)} ${trend}</td><td>${spark(h)}</td>` +
+        return `<tr><td>${icon(icons, item(g.good).id)}${esc(item(g.good).label)}</td><td class="num">${money(g.price)} ${trend}</td><td>${spark(h)}</td>` +
           `<td class="num">${g.stock}</td><td class="num">${g.producedToday || ''}</td><td class="num">${g.consumedToday || ''}</td></tr>`;
       }).join('');
       return (
         `<p class="sub">${esc(game.plan?.name ?? 'The village')}, day ${l.day + 1}. ${l.population} people: ${children} children, ${esc(people)}.</p>` +
         `<p class="sub">${l.coin} coins in the village: ${l.purses} in purses, ${l.tills} in tills, ${l.treasury} in the common chest. ` +
-        `Last evening's pay came to ${l.payroll} coins, and each adult had ${l.dividend} from the chest. ` +
-        `You have paid in ${l.playerNet >= 0 ? l.playerNet : 0} more than you have taken out.</p>` +
+        `Last evening's pay came to ${l.payroll} coins, and each adult had ${l.dividend} from the chest.` +
+        (l.playerNet > 0 ? ` Your custom has brought in ${l.playerNet} coins more than it has taken out.` : l.playerNet < 0 ? ` You have taken ${-l.playerNet} coins more out of the village than you have spent in it.` : '') +
+        '</p>' +
         `<table><tr><th>Good</th><th class="num">Price</th><th>Last days</th><th class="num">In store</th><th class="num">Made today</th><th class="num">Used today</th></tr>${rows}</table>` +
         `<h4>Since the start</h4><p class="sub">${s.meals} meals eaten (${s.almsMeals} given free), ${s.breadBaked} loaves baked, ${s.cellsHarvested} plots reaped, ` +
         `${s.treesFelled} trees felled and ${s.saplingsPlanted} planted, ${s.fishCaught} fish landed, ${s.animalsHunted} animals hunted, ` +
@@ -86,8 +87,8 @@ export function wildlifePanel(game: Game): Panel {
       for (const v of game.life.village?.views ?? []) if (v.kind !== 'villager' && v.kind !== 'child') farm.set(v.kind, (farm.get(v.kind) ?? 0) + 1);
       const herd = [...farm].map(([k, n]) => `${n} ${n === 1 ? k : plural(k)}`).join(', ');
       return (
-        `<p class="sub">One line a day for each kind, from nothing up to its peak. A kind cannot outgrow what the island carries.</p>` +
-        `<table><tr><th>Kind</th><th class="num">Now</th><th class="num">Most</th><th>Over time</th><th class="num">Born</th><th class="num">Old age</th>` +
+        `<p class="sub">Each curve is that kind's numbers day by day, drawn from none up to its peak. The limit is what the island can carry: breeding stops there.</p>` +
+        `<table><tr><th>Kind</th><th class="num">Now</th><th class="num">Limit</th><th>Day by day</th><th class="num">Born</th><th class="num">Old age</th>` +
         `<th class="num">Starved</th><th class="num">Killed</th><th class="num">Hunted</th><th class="num">Arrived</th></tr>${rows}</table>` +
         `<h4>Plants</h4><p class="sub">Open grass is ${(p.cover * 100).toFixed(0)}% covered: about ${p.tallGrass} tufts of tall grass and ${p.flowers} flowers. ` +
         `${p.berryBushes} berry bushes (${p.ripeBushes} ripe), ${p.mushrooms} mushrooms, ${p.saplings} saplings coming up.</p>` +
@@ -117,11 +118,12 @@ export function tradePanel(game: Game, icons: Icons): Panel {
         return `<tr><td>${icon(icons, o.item)}${esc(o.label)}</td><td class="num">${o.have || ''}</td>${buy}${sell}</tr>`;
       }).join('');
       const closed = trade.open ? '' : '<p class="sub"><b>The seller has left the counter.</b> Come back when someone is serving.</p>';
+      // The outcome of the last click sits above the table, where it is seen without scrolling.
       return (
         `<p class="sub">${who ? `${esc(who.title)}, ${esc(who.subtitle)}. ` : ''}You have ${coins} coins. Prices are for one; a larger lot costs more each, and sells for less.</p>` +
         closed +
-        `<table><tr><th>Good</th><th class="num">You have</th><th class="num">Buy for</th><th>Buy</th><th class="num">Sells for</th><th>Sell</th></tr>${rows}</table>` +
-        (trade.note ? `<p class="sub">${esc(trade.note)}</p>` : '')
+        `<p class="sub note">${trade.note ? esc(trade.note) : '&nbsp;'}</p>` +
+        `<table><tr><th>Good</th><th class="num">You have</th><th class="num">Buy for</th><th>Buy</th><th class="num">Sells for</th><th>Sell</th></tr>${rows}</table>`
       );
     },
     act: (name, arg) => {

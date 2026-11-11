@@ -65,6 +65,7 @@
 .panel h2 { margin: 0 0 4px; font-size: 22px; font-weight: normal; letter-spacing: 0.04em; }
 .panel h4 { margin: 12px 0 4px; font-size: 14px; font-weight: normal; letter-spacing: 0.08em; text-transform: uppercase; color: #6b5132; }
 .panel .sub { margin: 0 0 10px; font-size: 13px; color: #6b5132; }
+.panel .note { color: var(--ink); font-style: italic; }
 .panel table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .panel th { text-align: left; font-weight: normal; color: #6b5132; border-bottom: 1px solid #b9a67c; padding: 3px 8px 3px 0; }
 .panel td { padding: 3px 8px 3px 0; border-bottom: 1px solid rgba(107, 81, 50, 0.16); vertical-align: middle; }

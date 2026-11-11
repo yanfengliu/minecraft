@@ -271,6 +271,83 @@ test('things fall: a block, a pile of sand, and a dropped loaf the player picks 
   expect(errors).toEqual([]);
 });
 
+test('the player trades with a villager through the real controls', async ({ page }) => {
+  const errors = await boot(page, FULL);
+  // Run the morning on until someone is serving, then find a place to stand from which the crosshair rests on them.
+  const found = await page.evaluate(() => {
+    const t = window.__tidewick!;
+    const g = t.game!;
+    const village = g.life.village!;
+    t.setWeather('clear');
+    t.setTimeScale(30);
+    let seller = village.people.find((p) => village.canTrade(p.id));
+    for (let i = 0; i < 400 && !seller; i++) {
+      t.step(0.25);
+      seller = village.people.find((p) => village.canTrade(p.id));
+    }
+    t.setTimeScale(1);
+    if (!seller) return null;
+    const p = g.player;
+    p.flying = false;
+    for (const radius of [2.2, 1.7, 2.8]) {
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2;
+        const x = seller.x + Math.sin(a) * radius;
+        const z = seller.z + Math.cos(a) * radius;
+        p.teleport(x, seller.y + 0.05, z);
+        t.step(0.3);
+        // Aim from the eye at the seller's chest.
+        const dx = seller.x - p.x;
+        const dy = seller.y + 1.25 - (p.y + 1.62);
+        const dz = seller.z - p.z;
+        p.yaw = Math.atan2(dx, dz);
+        p.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+        t.step(0.05);
+        if (g.focus?.id === seller.id && village.canTrade(seller.id)) {
+          const l = village.ledger();
+          return { id: seller.id, prompt: g.focusPrompt(), coins: g.inventory.coins, bread: g.inventory.count(t.item('bread')), closed: l.coin - l.playerNet, clock: String(t.stats().clock) };
+        }
+      }
+    }
+    return { id: -1, prompt: '', coins: 0, bread: 0, closed: 0, clock: String(t.stats().clock) };
+  });
+  expect(found, 'nobody was serving all morning').not.toBeNull();
+  console.log('seller', JSON.stringify(found));
+  expect(found!.id, 'no place to stand from which the seller can be looked at').toBeGreaterThan(0);
+  expect(found!.prompt).toBe('Right-click to trade');
+
+  // A real right click at the crosshair opens the trade window.
+  const step = (seconds: number): Promise<void> => page.evaluate((s) => window.__tidewick!.step(s), seconds);
+  await page.mouse.click(640, 360, { button: 'right' });
+  await step(0.05);
+  expect(await page.evaluate(() => window.__tidewick!.game!.hud.open)).toBe('trade');
+  await expect(page.locator('.panel h2')).toHaveText('Trade');
+
+  // One loaf, with a real click on its button: a coin price leaves the purse and a loaf arrives.
+  const price = await page.evaluate(() => window.__tidewick!.game!.life.village!.quoteBuy('bread', 1));
+  expect(price).not.toBeNull();
+  await page.locator('.panel button[data-act="buy:bread*1"]').click();
+  await expect(page.locator('.panel .note')).toContainText('Bought 1 bread');
+  const after = await page.evaluate(() => {
+    const t = window.__tidewick!;
+    const g = t.game!;
+    const l = g.life.village!.ledger();
+    return { coins: g.inventory.coins, bread: g.inventory.count(t.item('bread')), closed: l.coin - l.playerNet };
+  });
+  expect(after.coins).toBe(found!.coins - (price as number));
+  expect(after.bread).toBe(found!.bread + 1);
+  // No coin was made or lost between the two of them.
+  expect(after.closed).toBe(found!.closed);
+
+  // Escape closes the window and ends the dealing.
+  await page.keyboard.press('Escape');
+  await step(0.05);
+  const end = await page.evaluate(() => ({ open: window.__tidewick!.game!.hud.open, partner: window.__tidewick!.game!.trade!.partner }));
+  expect(end.open).toBeNull();
+  expect(end.partner).toBe(-1);
+  expect(errors).toEqual([]);
+});
+
 test('the full island holds a village and still fits the frame budget', async ({ page }) => {
   const errors = await boot(page, FULL);
   await page.waitForFunction(() => window.__tidewick!.game!.pool.pending === 0, undefined, { timeout: 120_000 });

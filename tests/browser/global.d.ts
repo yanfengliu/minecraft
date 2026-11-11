@@ -10,7 +10,10 @@ declare global {
       error: string | null;
       game: {
         info: { spawn: { x: number; y: number; z: number } };
-        player: { x: number; y: number; z: number; onGround: boolean; flying: boolean };
+        player: { x: number; y: number; z: number; yaw: number; pitch: number; onGround: boolean; flying: boolean; teleport(x: number, y: number, z: number): void };
+        focus: { id: number } | null;
+        hud: { open: string | null };
+        trade: { partner: number } | null;
         plan: {
           center: { x: number; y: number; z: number };
           buildings: unknown[];
@@ -25,15 +28,18 @@ declare global {
         focusPrompt(): string;
         life: {
           village: {
-            people: readonly { id: number; x: number; z: number; anim: string }[];
+            people: readonly { id: number; x: number; y: number; z: number; anim: string }[];
             stats: { teleports: number; pathFails: number };
+            canTrade(id: number): boolean;
+            quoteBuy(good: string, qty: number): number | null;
+            ledger(): { coin: number; playerNet: number };
           } | null;
           eco: {
             views: readonly { id: number; x: number; z: number; kind: string }[];
             census(): { kind: string; count: number }[];
           };
         };
-        inventory: { count(item: number): number };
+        inventory: { coins: number; count(item: number): number };
         physics: {
           spawnBlock(state: number, x: number, y: number, z: number): number;
           spawnItem(item: number, count: number, x: number, y: number, z: number): number;
