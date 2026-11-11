@@ -106,6 +106,10 @@ export class Game {
   /** Seconds before items are picked up again, after a pick-up that did not fit in the pack. */
   private pickupWait = 0;
   private drops = 0;
+  /** 1 at the moment of a blow or a placement, falling to 0: swings the held item. */
+  private swing = 0;
+  /** Metres walked, for the sway of the held item. */
+  private stride = 0;
 
   private constructor(canvas: HTMLCanvasElement, gen: GenResult, world: World, physics: Physics) {
     this.world = world;
@@ -323,6 +327,10 @@ export class Game {
       broke: (x, y, z, state, drop) => {
         if (drop) this.drop(drop.item, drop.count, x, y, z);
         this.particles.burst('break', x + 0.5, y + 0.5, z + 0.5, this.colorOf(state));
+        this.swing = 1;
+      },
+      placed: () => {
+        this.swing = 1;
       },
     }, body ? body.distance : REACH);
     if (body && !this.interaction.target && this.input.buttons.has(0)) {
@@ -422,6 +430,34 @@ export class Game {
     return [a[tile] as number, a[tile + 1] as number, a[tile + 2] as number];
   }
 
+  /** What the player holds, drawn low on the right of the view as if in the hand: it swings with a blow and sways with a stride. */
+  private drawHeld(ents: Renderer['entities'], dt: number): void {
+    this.swing = Math.max(0, this.swing - dt * 5);
+    const held = this.inventory.held;
+    if (!held) return;
+    const cam = this.camera;
+    const p = this.player;
+    const sy = Math.sin(cam.yaw), cy = Math.cos(cam.yaw);
+    const sp = Math.sin(cam.pitch), cp = Math.cos(cam.pitch);
+    // The view's own axes: forward, right (level) and up.
+    const fx = sy * cp, fy = sp, fz = cy * cp;
+    const rx = -cy, rz = sy;
+    const ux = -sy * sp, uy = cp, uz = -cy * sp;
+    const speed = p.onGround ? Math.hypot(p.vx, p.vz) : 0;
+    this.stride += speed * dt;
+    const digging = this.interaction.progress > 0 ? 0.5 + 0.5 * Math.sin(this.elapsed * 17) : 0;
+    const blow = Math.max(this.swing, digging * 0.7);
+    const sway = Math.sin(this.stride * 1.6) * 0.012 * Math.min(1, speed / 3);
+    const ahead = 0.5 + 0.12 * blow;
+    const side = 0.36 - 0.06 * blow + sway;
+    const down = 0.3 + 0.08 * blow + Math.abs(sway) * 0.6;
+    const turn = cam.yaw + 0.62 - 0.5 * blow;
+    this.bodies.item(ents, {
+      x: cam.x + fx * ahead + rx * side - ux * down, y: cam.y + fy * ahead - uy * down, z: cam.z + fz * ahead + rz * side - uz * down,
+      qx: 0, qy: Math.sin(turn / 2), qz: 0, qw: Math.cos(turn / 2),
+    }, held.item, 1, this.env, 0.17);
+  }
+
   /** Put items into the world where a block was, with a small hop so they are seen to come loose. */
   private drop(itemId: number, count: number, x: number, y: number, z: number): void {
     const a = rand3(x, y, z, this.drops++) * Math.PI * 2;
@@ -461,6 +497,7 @@ export class Game {
       if ((v.x - cam.x) ** 2 + (v.z - cam.z) ** 2 < 260 * 260) ents.addEntity(v, this.world, dt);
     }
     this.bodies.draw(ents, this.physics.bodies, this.env, cam.x, cam.z);
+    this.drawHeld(ents, dt);
     this.particles.draw(ents, this.world);
     ents.finish();
 

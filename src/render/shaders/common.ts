@@ -99,6 +99,21 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 `;
 
 /**
+ * The net of bright lines that waves focus sunlight into on a bed under water.
+ * Each line is the half-way contour of a drifting noise field, bent by a
+ * second, slower field; two such nets at different scales cross. Returns about
+ * 0.3 on average, up to about 1.7 where lines meet. Needs COMMON.
+ */
+export const CAUSTICS = /* glsl */ `
+float causticNet(vec2 p, float t) {
+  vec2 bend = vec2(valueNoise(p * 0.7 + vec2(t * 0.35, 0.0)), valueNoise(p * 0.7 + vec2(4.1, t * 0.3))) - 0.5;
+  float a = valueNoise(p * 1.9 + bend * 1.6 + vec2(0.0, t * 0.5));
+  float b = valueNoise(p * 2.7 - bend * 1.3 + vec2(t * 0.45, 7.7));
+  return pow(1.0 - abs(2.0 * a - 1.0), 5.0) + 0.7 * pow(1.0 - abs(2.0 * b - 1.0), 5.0);
+}
+`;
+
+/**
  * Samples a 16-pixel tile so texels stay crisp squares up close (with a
  * one-pixel antialiased edge) and still filter and mip properly at distance.
  * Plain nearest magnification is not an option: anisotropic filtering, which

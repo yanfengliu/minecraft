@@ -24,8 +24,19 @@ const WHITE: Rgb = [1, 1, 1];
 
 const v = { x: 0, y: 0, z: 0 };
 
+/** Where something is and how it is turned: all a body needs to be drawn. */
+export interface Pose {
+  x: number;
+  y: number;
+  z: number;
+  qx: number;
+  qy: number;
+  qz: number;
+  qw: number;
+}
+
 /** Turn a body-local offset into world axes by the body's rotation; the result is left in `v`. */
-function turn(b: BodyView, x: number, y: number, z: number): void {
+function turn(b: Pose, x: number, y: number, z: number): void {
   const { qx, qy, qz, qw } = b;
   // t = 2 q x p; p' = p + w t + q x t
   const tx = 2 * (qy * z - qz * y);
@@ -52,31 +63,35 @@ export class BodyDrawer {
       if (dx * dx + dz * dz > r2) continue;
       if (b.kind === 'block') this.cell(out, b, 0, 0, 0, b.state, 1, env);
       else if (b.kind === 'compound') for (const c of b.cells) this.cell(out, b, c.dx, c.dy, c.dz, c.state, 1, env);
-      else this.item(out, b, env);
+      else this.item(out, b, b.item, b.count, env);
     }
   }
 
-  private item(out: EntityRenderer, b: BodyView, env: Environment): void {
-    const def = ITEMS[b.item];
+  /**
+   * An item at a pose, `size` metres across: a small copy of its block, or a
+   * plain cube in the colour of its good. Also what the player's hand holds.
+   */
+  item(out: EntityRenderer, b: Pose, itemId: number, count: number, env: Environment, size = ITEM_SIZE): void {
+    const def = ITEMS[itemId];
     if (!def) return;
     if (def.block >= 0) {
-      this.cell(out, b, 0, 0, 0, def.block, ITEM_SIZE, env);
+      this.cell(out, b, 0, 0, 0, def.block, size, env);
       // A stack shows as a second one tucked behind the first.
-      if (b.count > 1) this.cell(out, b, 0.32, 0.18, 0.28, def.block, ITEM_SIZE, env);
+      if (count > 1) this.cell(out, b, 0.32, 0.18, 0.28, def.block, size, env);
       return;
     }
     const c = GOOD_COLOR[def.name] ?? PLAIN;
     const light = this.lightAt(b.x, b.y, b.z);
-    const h = ITEM_SIZE / 2;
+    const h = size / 2;
     out.addBox(b.x, b.y, b.z, h, h, h, b.qx, b.qy, b.qz, b.qw, c[0], c[1], c[2], (light >> 4) / 15, (light & 15) / 15);
-    if (b.count > 1) {
-      turn(b, 0.1, 0.06, 0.09);
+    if (count > 1) {
+      turn(b, size * 0.33, size * 0.2, size * 0.3);
       out.addBox(b.x + v.x, b.y + v.y, b.z + v.z, h, h, h, b.qx, b.qy, b.qz, b.qw, c[0] * 0.9, c[1] * 0.9, c[2] * 0.9, (light >> 4) / 15, (light & 15) / 15);
     }
   }
 
   /** One block of a body: its cell offset in the body's frame, drawn at `scale` (1 for a block, smaller for a dropped item). */
-  private cell(out: EntityRenderer, b: BodyView, dx: number, dy: number, dz: number, state: number, scale: number, env: Environment): void {
+  private cell(out: EntityRenderer, b: Pose, dx: number, dy: number, dz: number, state: number, scale: number, env: Environment): void {
     const s = BLOCKS[state] as BlockState | undefined;
     if (!s || state === 0) return;
     turn(b, dx * scale, dy * scale, dz * scale);

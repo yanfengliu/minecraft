@@ -7,7 +7,7 @@
 
 import { ATMOSPHERE_GLSL } from '../atmosphere';
 import { CLOUD_DENSITY } from './clouds';
-import { COMMON, FRAME_BLOCK, TILE_SAMPLE } from './common';
+import { CAUSTICS, COMMON, FRAME_BLOCK, TILE_SAMPLE } from './common';
 import { FOG, SHADOWS } from './lighting';
 
 export const WATER_VS = /* glsl */ `
@@ -62,6 +62,7 @@ ${SHADOWS}
 ${FOG}
 ${CLOUD_DENSITY}
 ${TILE_SAMPLE}
+${CAUSTICS}
 uniform sampler2D uScene;
 uniform sampler2D uDepth;
 uniform sampler2DArray uTiles;
@@ -226,6 +227,13 @@ void main() {
   vec3 absorb = fresh ? vec3(0.34, 0.12, 0.1) : vec3(0.4, 0.09, 0.055);
   vec3 body = fresh ? vec3(0.04, 0.16, 0.13) : vec3(0.015, 0.11, 0.16);
   vec3 bodyLit = body * (uAmbientSky.rgb * 1.4 * sky + uLightColor.rgb * ndlUp * 0.55 * shadow);
+  if (top) {
+    // Sunlight gathered by the waves into moving lines on the bed: strongest a little way down, lost in the deep.
+    vec3 bed = worldFromDepth(ruv, rD);
+    float down = max(vWorld.y - bed.y, 0.0);
+    float gather = saturate(down * 1.4) * exp(-down * 0.2) * shadow * ndlUp * uLightDir.w * (1.0 - uWeather.w * 0.85);
+    behind *= 1.0 + (causticNet(bed.xz + bed.y * 0.3, t) - 0.3) * 1.5 * gather;
+  }
   vec3 under = behind * exp(-thick * absorb) + bodyLit * (1.0 - exp(-thick * 0.21));
 
   // Reflection.

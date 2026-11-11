@@ -3,7 +3,7 @@
 
 import { ATMOSPHERE_GLSL } from '../atmosphere';
 import { CLOUD_DENSITY } from './clouds';
-import { COMMON, FRAME_BLOCK } from './common';
+import { CAUSTICS, COMMON, FRAME_BLOCK } from './common';
 
 /** Cascaded shadow lookup. Needs uShadowMap, uShadowMat[4], uShadowSplit, uShadowTexel in scope. */
 export const SHADOWS = /* glsl */ `
@@ -91,6 +91,7 @@ ${ATMOSPHERE_GLSL}
 ${SHADOWS}
 ${FOG}
 ${CLOUD_DENSITY}
+${CAUSTICS}
 uniform sampler2D uAlbedo;
 uniform sampler2D uNormal;
 uniform sampler2D uLight;
@@ -219,6 +220,9 @@ void main() {
 
   // Key light.
   vec3 direct = uLightColor.rgb * lambert * shadow * mix(1.0, occl, 0.35);
+  // Seen from under water, the bed carries the moving net of light the waves focus onto it.
+  // (Seen from above, the water surface adds it: see water.ts.)
+  if (uMisc.x > 0.5) direct *= 1.0 + (causticNet(world.xz + world.y * 0.3, uCameraPos.w) - 0.3) * 1.5 * saturate(N.y + 0.3);
   // Sky dome from above, ground bounce from below; a wall gets a good share of both.
   float up = N.y * 0.5 + 0.5;
   vec3 ambient = (mix(uAmbientGround.rgb, uAmbientSky.rgb, up) + uAmbientGround.rgb * (1.0 - abs(N.y)) * 0.6) * skyVis * occl;

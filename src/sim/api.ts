@@ -49,6 +49,8 @@ export interface EntityView {
   held: number;
   /** A short line shown above the head while it is set, or ''. */
   bubble: string;
+  /** True while the creature is out of sight (down a burrow, say): it is not drawn and cannot be looked at. Absent means visible. */
+  hidden?: boolean;
 }
 
 /** What the inspector panel shows for one entity. */
@@ -79,8 +81,8 @@ export interface WildlifeApi {
 
 /** Implemented by the village simulation; used by predators. */
 export interface LivestockApi {
-  /** Nearest living farm animal within `radius` blocks, or null. */
-  findLivestock(x: number, z: number, radius: number): EntityView | null;
+  /** Nearest living farm animal within `radius` blocks, or null. With `kinds`, only animals of those kinds count. */
+  findLivestock(x: number, z: number, radius: number, kinds?: readonly EntityKind[]): EntityView | null;
   killLivestock(id: number): void;
 }
 
