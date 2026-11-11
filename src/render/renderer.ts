@@ -8,22 +8,22 @@ import type { World } from '../world/world';
 import { EntityRenderer } from './entities/renderer';
 import type { Environment } from './environment';
 import { FrameUniforms } from './frame';
-import {
-  FULLSCREEN_VS, type GL, Program, type Target, bindTarget, createTarget, createTexture, deleteTarget, drawFullscreen,
-  requireExtensions,
-} from './gl';
+import { OCEAN_VERTICES, bakeCloudNoise, oceanSkirt, outlineBox, particleQuad } from './geometry';
+import { FULLSCREEN_VS, type GL, Program, type Target, bindTarget, createTarget, createTexture, drawFullscreen, requireExtensions } from './gl';
 import { type Mat4, frustumPlanes, invert, lookDir, mat4, multiply, perspective } from './mat4';
+import { PostChain } from './postChain';
 import { type SectionMesh, SectionStore } from './sectionStore';
 import { CASCADES, type CameraFrame, ShadowCascades } from './shadows';
 import { CHUNK_GBUFFER_FS, CHUNK_SHADOW_FS, CHUNK_VS } from './shaders/chunk';
-import { CLOUDS_FS, CLOUD_NOISE_FS, NOISE_SIZE } from './shaders/clouds';
+import { CLOUDS_FS } from './shaders/clouds';
 import { ENTITY_FS, ENTITY_SHADOW_FS, ENTITY_VS } from './shaders/entity';
 import { LIGHTING_FS, SKY_LUT_FS } from './shaders/lighting';
-import { OVERLAY_FS, OVERLAY_VS, overlayCube } from './shaders/overlay';
+import { OVERLAY_FS, OVERLAY_VS } from './shaders/overlay';
 import { PRECIP_FS, PRECIP_VS } from './shaders/precip';
-import { BLOOM_DOWN_FS, BLOOM_UP_FS, COMPOSITE_FS, FXAA_FS, SSAO_BLUR_FS, SSAO_FS } from './shaders/post';
+import { SSAO_BLUR_FS, SSAO_FS } from './shaders/post';
 import { VOLUME_ADD_FS, VOLUME_FS } from './shaders/volumetric';
 import { WATER_FS, WATER_VS } from './shaders/water';
+import { FrameTargets } from './targets';
 import { type TileSet, buildTileSet } from './tiles';
 
 export interface Camera {
@@ -85,7 +85,6 @@ export interface RenderStats {
 
 const NEAR = 0.1;
 const FAR = 3000;
-const BLOOM_LEVELS = 6;
 
 /** Tiles with no grain or direction, which the shader may turn at random per block to hide repetition. */
 const TURN_MASK = (['grass_top', 'dirt', 'forest_floor', 'stone', 'granite', 'gravel', 'sand', 'snow', 'bedrock', 'coal_ore', 'iron_ore', 'path_top'] as const)
@@ -121,10 +120,7 @@ export class Renderer {
   private readonly pSkyLut: Program;
   private readonly pSsao: Program;
   private readonly pSsaoBlur: Program;
-  private readonly pBloomDown: Program;
-  private readonly pBloomUp: Program;
-  private readonly pComposite: Program;
-  private readonly pFxaa: Program;
+  private readonly post: PostChain;
   private readonly pWater: Program;
   private readonly pOcean: Program;
   private readonly oceanVao: WebGLVertexArrayObject;
@@ -132,14 +128,12 @@ export class Renderer {
   private readonly overlayVao: WebGLVertexArrayObject;
   private readonly pClouds: Program;
   private readonly cloudNoise: WebGLTexture;
-  /** Quarter-resolution cloud buffers: this frame's and last frame's, swapped each frame. */
-  private clouds: [Target, Target] | null = null;
+  /** Which of the two cloud buffers is this frame's; the other holds last frame's. */
   private cloudFlip = 0;
   private cloudFresh = true;
   private readonly prevViewProj: Mat4 = mat4();
   private readonly pVolume: Program;
   private readonly pVolumeAdd: Program;
-  private volume: Target | null = null;
   /** Creatures and loose bodies: fill it between `begin()` and `finish()` each frame, before `render`. */
   readonly entities: EntityRenderer;
   private readonly pEntity: Program;
@@ -155,17 +149,7 @@ export class Renderer {
   /** The block to outline (world-space box) and how far along breaking it is, or null. */
   selection: { box: number[]; progress: number } | null = null;
 
-  private width = 0;
-  private height = 0;
-  private gbuffer: Target | null = null;
-  private hdr: Target | null = null;
-  /** The lit opaque scene, copied so water can refract and reflect it. */
-  private hdrCopy: Target | null = null;
-  /** The HDR colour with its own copy of the depth, so forward passes can test depth while sampling the original. */
-  private forward: Target | null = null;
-  private ao: [Target, Target] | null = null;
-  private bloom: Target[] = [];
-  private ldr: Target | null = null;
+  private readonly targets: FrameTargets;
 
   private readonly view: Mat4 = mat4();
   private readonly proj: Mat4 = mat4();
@@ -218,65 +202,16 @@ export class Renderer {
     this.pSkyLut = new Program(gl, 'sky-lut', FULLSCREEN_VS, SKY_LUT_FS);
     this.pSsao = new Program(gl, 'ssao', FULLSCREEN_VS, SSAO_FS);
     this.pSsaoBlur = new Program(gl, 'ssao-blur', FULLSCREEN_VS, SSAO_BLUR_FS);
-    this.pBloomDown = new Program(gl, 'bloom-down', FULLSCREEN_VS, BLOOM_DOWN_FS);
-    this.pBloomUp = new Program(gl, 'bloom-up', FULLSCREEN_VS, BLOOM_UP_FS);
-    this.pComposite = new Program(gl, 'composite', FULLSCREEN_VS, COMPOSITE_FS);
-    this.pFxaa = new Program(gl, 'fxaa', FULLSCREEN_VS, FXAA_FS);
+    this.post = new PostChain(gl);
+    this.targets = new FrameTargets(gl);
     this.pWater = new Program(gl, 'water', WATER_VS, WATER_FS);
     this.pOcean = new Program(gl, 'ocean', WATER_VS, WATER_FS, { OCEAN: true });
-
-    // The open sea beyond the world: four slabs around its rectangle, level with the sea inside it.
-    const y = world.seaLevel - 1 + 15 / 16;
-    const R = 2600;
-    const { sx, sz } = world;
-    const rects = [[-R, -R, 0, sz + R], [sx, -R, sx + R, sz + R], [0, -R, sx, 0], [0, sz, sx, sz + R]];
-    const verts: number[] = [];
-    for (const [x0, z0, x1, z1] of rects as [number, number, number, number][]) {
-      verts.push(x0, y, z0, x0, y, z1, x1, y, z1, x0, y, z0, x1, y, z1, x1, y, z0);
-    }
-    const vao = gl.createVertexArray();
-    const vbo = gl.createBuffer();
-    if (!vao || !vbo) throw new Error('could not create the ocean buffers');
-    gl.bindVertexArray(vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-    gl.bindVertexArray(null);
-    this.oceanVao = vao;
-
-    // Cloud noise: a tiling volume, filled once on the GPU a slice at a time.
+    this.oceanVao = oceanSkirt(gl, world);
     this.pClouds = new Program(gl, 'clouds', FULLSCREEN_VS, CLOUDS_FS);
-    this.cloudNoise = createTexture(gl, {
-      target: gl.TEXTURE_3D, width: NOISE_SIZE, height: NOISE_SIZE, depth: NOISE_SIZE,
-      internalFormat: gl.RG8, format: gl.RG, type: gl.UNSIGNED_BYTE, min: gl.LINEAR, mag: gl.LINEAR, wrap: gl.REPEAT,
-    });
-    const pNoise = new Program(gl, 'cloud-noise', FULLSCREEN_VS, CLOUD_NOISE_FS);
-    pNoise.use();
-    gl.disable(gl.DEPTH_TEST);
-    gl.disable(gl.BLEND);
-    for (let z = 0; z < NOISE_SIZE; z++) {
-      const slice = createTarget(gl, NOISE_SIZE, NOISE_SIZE, [this.cloudNoise], null, z);
-      bindTarget(gl, slice);
-      pNoise.f('uSlice', (z + 0.5) / NOISE_SIZE);
-      drawFullscreen(gl);
-      deleteTarget(gl, slice, false);
-    }
-    gl.deleteProgram(pNoise.handle);
-
-    // Rain, snow and splashes: one instanced quad, positioned entirely in the vertex shader.
+    this.cloudNoise = bakeCloudNoise(gl);
     this.pPrecip = new Program(gl, 'precip', PRECIP_VS, PRECIP_FS);
     this.pSplash = new Program(gl, 'splash', PRECIP_VS, PRECIP_FS, { SPLASH: true });
-    const qvao = gl.createVertexArray();
-    const qvbo = gl.createBuffer();
-    if (!qvao || !qvbo) throw new Error('could not create the particle quad');
-    gl.bindVertexArray(qvao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, qvbo);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, 0, 0.5, 0, -0.5, 1, 0.5, 1]), gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    gl.bindVertexArray(null);
-    this.quadVao = qvao;
+    this.quadVao = particleQuad(gl);
     this.heightTex = createTexture(gl, {
       width: world.sx, height: world.sz, internalFormat: gl.R8, format: gl.RED, type: gl.UNSIGNED_BYTE, data: world.heightmap,
       min: gl.NEAREST, mag: gl.NEAREST,
@@ -289,18 +224,7 @@ export class Renderer {
     this.pEntityShadow = new Program(gl, 'entity-shadow', ENTITY_VS, ENTITY_SHADOW_FS, { SHADOW: true });
 
     this.pOverlay = new Program(gl, 'overlay', OVERLAY_VS, OVERLAY_FS);
-    const ovao = gl.createVertexArray();
-    const ovbo = gl.createBuffer();
-    if (!ovao || !ovbo) throw new Error('could not create the overlay buffers');
-    gl.bindVertexArray(ovao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, ovbo);
-    gl.bufferData(gl.ARRAY_BUFFER, overlayCube(), gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
-    gl.bindVertexArray(null);
-    this.overlayVao = ovao;
+    this.overlayVao = outlineBox(gl);
   }
 
   setMesh(section: number, mesh: MeshOutput | null): void {
@@ -323,7 +247,6 @@ export class Renderer {
 
   /** Match the internal targets to the canvas. Cheap when nothing changed. */
   resize(): void {
-    const gl = this.gl;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const cw = Math.max(2, Math.floor(this.canvas.clientWidth * dpr));
     const ch = Math.max(2, Math.floor(this.canvas.clientHeight * dpr));
@@ -333,65 +256,14 @@ export class Renderer {
     }
     const w = Math.max(2, Math.round(cw * this.settings.scale));
     const h = Math.max(2, Math.round(ch * this.settings.scale));
-    if (w === this.width && h === this.height) return;
-    this.width = w;
-    this.height = h;
-
-    deleteTarget(gl, this.gbuffer);
-    deleteTarget(gl, this.hdr);
-    deleteTarget(gl, this.hdrCopy);
-    if (this.forward) {
-      // Its colour belongs to `hdr`; only the depth copy is its own.
-      gl.deleteTexture(this.forward.depth);
-      deleteTarget(gl, this.forward, false);
-    }
-    if (this.ao) this.ao.forEach((t) => deleteTarget(gl, t));
-    this.bloom.forEach((t) => deleteTarget(gl, t));
-    deleteTarget(gl, this.ldr);
-
-    const tex = (tw: number, th: number, internalFormat: number, format: number, type: number, filter: number): WebGLTexture =>
-      createTexture(gl, { width: tw, height: th, internalFormat, format, type, min: filter, mag: filter });
-    const depth = tex(w, h, gl.DEPTH_COMPONENT24, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, gl.NEAREST);
-    this.gbuffer = createTarget(gl, w, h, [
-      tex(w, h, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST),
-      tex(w, h, gl.RGB10_A2, gl.RGBA, gl.UNSIGNED_INT_2_10_10_10_REV, gl.NEAREST),
-      tex(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST),
-    ], depth);
-    this.hdr = createTarget(gl, w, h, [tex(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR)]);
-    this.hdrCopy = createTarget(gl, w, h, [tex(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR)]);
-    this.forward = createTarget(gl, w, h, [this.hdr.colors[0] as WebGLTexture], tex(w, h, gl.DEPTH_COMPONENT24, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, gl.NEAREST));
-    const hw = Math.max(1, w >> 1);
-    const hh = Math.max(1, h >> 1);
-    this.ao = [
-      createTarget(gl, hw, hh, [tex(hw, hh, gl.RG16F, gl.RG, gl.HALF_FLOAT, gl.LINEAR)]),
-      createTarget(gl, hw, hh, [tex(hw, hh, gl.RG16F, gl.RG, gl.HALF_FLOAT, gl.LINEAR)]),
-    ];
-    this.bloom = [];
-    for (let i = 0, bw = hw, bh = hh; i < BLOOM_LEVELS && bw > 2 && bh > 2; i++, bw >>= 1, bh >>= 1) {
-      this.bloom.push(createTarget(gl, bw, bh, [tex(bw, bh, gl.R11F_G11F_B10F, gl.RGB, gl.HALF_FLOAT, gl.LINEAR)]));
-    }
-    this.ldr = createTarget(gl, w, h, [tex(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR)]);
-    deleteTarget(gl, this.volume);
-    // Alpha carries view depth, which the upsample uses to keep the shafts from bleeding across edges.
-    this.volume = createTarget(gl, hw, hh, [tex(hw, hh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR)]);
-    if (this.clouds) this.clouds.forEach((t) => deleteTarget(gl, t));
-    const qw = Math.max(1, w >> 2);
-    const qh = Math.max(1, h >> 2);
-    this.clouds = [
-      createTarget(gl, qw, qh, [tex(qw, qh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR)]),
-      createTarget(gl, qw, qh, [tex(qw, qh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR)]),
-    ];
-    this.cloudFresh = true;
+    // New cloud buffers hold no history to blend with.
+    if (this.targets.resize(w, h)) this.cloudFresh = true;
   }
 
   render(cam: Camera, env: Environment, info: FrameInfo): void {
     const gl = this.gl;
     this.resize();
-    const gbuffer = this.gbuffer as Target;
-    const hdr = this.hdr as Target;
-    const ao = this.ao as [Target, Target];
-    const ldr = this.ldr as Target;
-    const { width: w, height: h } = this;
+    const { gbuffer, hdr, ao, width: w, height: h } = this.targets;
     const stats = this.stats;
     stats.drawCalls = 0;
     stats.triangles = 0;
@@ -470,7 +342,7 @@ export class Renderer {
     }
 
     // --- clouds -------------------------------------------------------------
-    const clouds = this.clouds as [Target, Target];
+    const clouds = this.targets.clouds;
     this.cloudFlip ^= 1;
     const cloudNow = clouds[this.cloudFlip] as Target;
     const cloudPrev = clouds[this.cloudFlip ^ 1] as Target;
@@ -583,8 +455,7 @@ export class Renderer {
     drawFullscreen(gl);
 
     // --- water and glass ----------------------------------------------------
-    const hdrCopy = this.hdrCopy as Target;
-    const forward = this.forward as Target;
+    const { hdrCopy, forward } = this.targets;
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, hdr.fbo);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, hdrCopy.fbo);
     gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
@@ -610,7 +481,7 @@ export class Renderer {
       prog.f4v('uShadowSplit', this.shadows.splits).f4v('uShadowTexel', this.shadows.texel).f('uShadowRes', this.shadows.res);
       if (prog === this.pOcean) {
         gl.bindVertexArray(this.oceanVao);
-        gl.drawArrays(gl.TRIANGLES, 0, 24);
+        gl.drawArrays(gl.TRIANGLES, 0, OCEAN_VERTICES);
         stats.drawCalls++;
       } else {
         // Farthest first, so nearer glass and water blend over what lies behind them.
@@ -652,7 +523,7 @@ export class Renderer {
 
     // --- light shafts -------------------------------------------------------
     if (this.settings.shafts && !info.underwater) {
-      const volume = this.volume as Target;
+      const volume = this.targets.volume;
       bindTarget(gl, volume);
       const pv = this.pVolume.use();
       pv.tex('uDepth', 0, gl.TEXTURE_2D, gbuffer.depth).tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
@@ -669,45 +540,8 @@ export class Renderer {
       gl.disable(gl.BLEND);
     }
 
-    // --- bloom --------------------------------------------------------------
-    let bloomTex = this.noCloud;
-    if (this.settings.bloom && this.bloom.length > 1) {
-      const down = this.pBloomDown.use();
-      let source: Target = hdr;
-      for (let i = 0; i < this.bloom.length; i++) {
-        const level = this.bloom[i] as Target;
-        bindTarget(gl, level);
-        down.tex('uSource', 0, gl.TEXTURE_2D, source.colors[0] as WebGLTexture).f2('uTexel', 1 / source.width, 1 / source.height).f('uFirst', i === 0 ? 1 : 0);
-        drawFullscreen(gl);
-        source = level;
-      }
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.ONE, gl.ONE);
-      const up = this.pBloomUp.use();
-      for (let i = this.bloom.length - 1; i > 0; i--) {
-        const from = this.bloom[i] as Target;
-        bindTarget(gl, this.bloom[i - 1] as Target);
-        up.tex('uSource', 0, gl.TEXTURE_2D, from.colors[0] as WebGLTexture).f2('uTexel', 1 / from.width, 1 / from.height);
-        drawFullscreen(gl);
-      }
-      gl.disable(gl.BLEND);
-      bloomTex = (this.bloom[0] as Target).colors[0] as WebGLTexture;
-    }
-
-    // --- tone mapping, then antialiasing onto the canvas ----------------------
-    const toScreen = !this.settings.fxaa;
-    if (toScreen) bindTarget(gl, null, this.canvas.width, this.canvas.height);
-    else bindTarget(gl, ldr);
-    this.pComposite.use()
-      .tex('uScene', 0, gl.TEXTURE_2D, hdr.colors[0] as WebGLTexture)
-      .tex('uBloom', 1, gl.TEXTURE_2D, bloomTex)
-      .f('uBloomStrength', 0.055);
-    drawFullscreen(gl);
-    if (!toScreen) {
-      bindTarget(gl, null, this.canvas.width, this.canvas.height);
-      this.pFxaa.use().tex('uSource', 0, gl.TEXTURE_2D, ldr.colors[0] as WebGLTexture).f2('uTexel', 1 / w, 1 / h);
-      drawFullscreen(gl);
-    }
+    // --- bloom, tone mapping, antialiasing onto the canvas ----------------------
+    this.post.run(this.targets, this.canvas, this.noCloud, this.settings.bloom, this.settings.fxaa);
     gl.depthMask(true);
   }
 }

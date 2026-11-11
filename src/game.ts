@@ -3,23 +3,27 @@
 import { clamp } from './core/math';
 import { Rng, rand3 } from './core/rng';
 import { Life } from './life';
-import type { Physics, PhysicsEvent } from './physics';
+import type { Physics } from './physics';
 import { Input } from './player/input';
 import { Interaction, REACH } from './player/interaction';
 import { Inventory } from './player/inventory';
+import { CREATURE_HEIGHT, pickCreature } from './player/pick';
 import { Player } from './player/player';
 import { Trade } from './player/trade';
 import { BodyDrawer } from './render/bodies';
+import { lineUp } from './render/entities/lineup';
 import { Environment } from './render/environment';
+import { HeldItem } from './render/held';
+import { WOOD_DUST, showPhysicsEvent } from './render/impacts';
 import { MeshPool } from './render/meshPool';
 import { Particles } from './render/particles';
 import { type Camera, type FrameInfo, Renderer } from './render/renderer';
-import { type AnimState, ENTITY_KINDS, type EntityKind, type EntityView, type InspectInfo, type VillagePlan, createBasicActions } from './sim/api';
+import { type AnimState, type EntityView, type InspectInfo, type VillagePlan, createBasicActions } from './sim/api';
 import { Clock, SIM_DT } from './sim/clock';
 import { type Regime, Weather } from './sim/weather';
 import { Hud } from './ui/hud';
 import { watchAttachments } from './world/attach';
-import { BLOCKS, IS_LEAVES, IS_LOG } from './world/blocks';
+import { BLOCKS, IS_LOG } from './world/blocks';
 import type { IslandInfo } from './world/gen/island';
 import { DEFAULT_ISLAND, type IslandConfig } from './world/gen/terrain';
 import { dropOf } from './world/items';
@@ -39,17 +43,8 @@ export interface Speech {
   kind: 'bubble' | 'tag';
 }
 
-/** Rough standing height of each kind of creature in metres, for picking and for placing words above it. */
-const HEIGHT: Record<EntityKind, number> = {
-  villager: 1.8, child: 1.15, sheep: 0.9, cow: 1.3, chicken: 0.5, deer: 1.45, rabbit: 0.45, fox: 0.6, wolf: 0.95, boar: 0.85,
-  songbird: 0.3, crow: 0.35, gull: 0.35, duck: 0.4, fish: 0.3,
-};
-
-/** The colour of the dust each material throws up when something made of it lands hard; indexed like `MATERIALS`. */
-const DUST: readonly (readonly [number, number, number])[] = [
-  [0.4, 0.4, 0.4], [0.42, 0.42, 0.42], [0.3, 0.22, 0.14], [0.6, 0.52, 0.34], [0.4, 0.39, 0.37], [0.4, 0.28, 0.15], [0.2, 0.36, 0.12], [0.22, 0.38, 0.14],
-  [0.7, 0.68, 0.62], [0.7, 0.8, 0.82], [0.45, 0.46, 0.48], [0.6, 0.5, 0.2], [0.45, 0.24, 0.17], [0.6, 0.72, 0.8], [0.9, 0.92, 0.95], [0.5, 0.36, 0.27],
-];
+/** How far from the camera something has to be before its particles are not worth throwing, in metres. */
+const EFFECT_RANGE = 90;
 /** Simulation steps one frame may run: 4 simulated seconds, enough for 120x time-lapse at 30 frames a second. */
 const MAX_STEPS_PER_FRAME = 40;
 /** How far from the player's middle a dropped item is picked up, in metres. */
@@ -116,10 +111,7 @@ export class Game {
   private drops = 0;
   /** What villagers have said to the player and until when (in `elapsed` seconds) it stays above their heads. */
   private readonly said = new Map<number, { text: string; until: number }>();
-  /** 1 at the moment of a blow or a placement, falling to 0: swings the held item. */
-  private swing = 0;
-  /** Metres walked, for the sway of the held item. */
-  private stride = 0;
+  private readonly hand = new HeldItem();
 
   private constructor(canvas: HTMLCanvasElement, gen: GenResult, world: World, physics: Physics) {
     this.world = world;
@@ -127,7 +119,10 @@ export class Game {
     this.plan = gen.plan;
     this.physics = physics;
     this.bodies = new BodyDrawer(world);
-    physics.events.on((e) => this.onPhysics(e));
+    const near = (x: number, z: number): boolean => (x - this.camera.x) ** 2 + (z - this.camera.z) ** 2 < EFFECT_RANGE * EFFECT_RANGE;
+    physics.events.on((e) => {
+      if (near(e.x, e.z)) showPhysicsEvent(this.particles, e, (state) => this.colorOf(state));
+    });
     watchAttachments(this.world, (x, y, z, state) => {
       const d = dropOf(state);
       if (d) this.drop(d.id, 1, x, y, z);
@@ -142,7 +137,6 @@ export class Game {
     const rng = new Rng(gen.info.config.seed ^ 0x5eed);
     this.weather = new Weather(rng.fork('weather'), this.clock);
     this.weather.lightning.on((s) => this.env.strike(s.intensity));
-    const near = (x: number, z: number): boolean => (x - this.camera.x) ** 2 + (z - this.camera.z) ** 2 < 90 * 90;
     const basic = createBasicActions(this.world);
     this.life = new Life(this.world, this.clock, this.weather, rng.fork('life'), this.plan, {
       // A woodcutter's tree is taken away whole and counted once: he is paid in logs for what he fells,
@@ -155,11 +149,10 @@ export class Game {
         const logs = basic.fellTree(x, y, z);
         if (logs > 0 && near(x, z)) {
           this.particles.burst('leaves', x + 0.5, top + 0.5, z + 0.5, this.colorOf(leaf), 4);
-          this.particles.burst('dust', x + 0.5, y + 0.3, z + 0.5, DUST[5], 1.5);
+          this.particles.burst('dust', x + 0.5, y + 0.3, z + 0.5, WOOD_DUST, 1.5);
         }
         return logs;
       },
-      // Only what happens near enough to be seen is worth a particle.
       effect: (kind, x, y, z) => {
         if (near(x, z)) this.particles.burst(kind, x, y, z);
       },
@@ -277,23 +270,9 @@ export class Game {
 
   /** Stand one of every creature in a row in front of the player, each in the given pose. */
   showLineUp(anim: AnimState = 'idle'): void {
-    this.lineUp.length = 0;
     const p = this.player;
-    const fx = Math.sin(p.yaw);
-    const fz = Math.cos(p.yaw);
-    ENTITY_KINDS.forEach((kind, i) => {
-      for (let row = 0; row < 2; row++) {
-        const side = (i - (ENTITY_KINDS.length - 1) / 2) * 1.5;
-        const ahead = 5 + row * 2.2;
-        const x = p.x + fx * ahead + fz * side;
-        const z = p.z + fz * ahead - fx * side;
-        const y = this.world.groundY(Math.floor(x), Math.floor(z), Math.floor(p.y) + 6) + 1;
-        this.lineUp.push({
-          id: 900000 + i * 2 + row, kind, look: i * 7 + row * 3 + 1, role: i + row * 5, x, y, z, yaw: p.yaw + Math.PI + (row ? 0.6 : 0),
-          anim, animTime: i * 0.3, scale: 1, held: -1, bubble: '',
-        });
-      }
-    });
+    this.lineUp.length = 0;
+    this.lineUp.push(...lineUp(this.world, p.x, p.y, p.z, p.yaw, anim));
   }
 
   /** Every creature in the world this frame. */
@@ -343,7 +322,7 @@ export class Game {
       const d2 = (v.x - p.x) ** 2 + (v.z - p.z) ** 2;
       if (d2 > 28 * 28) continue;
       const at = this.renderer.entities.drawn(v.id) ?? v;
-      out.push({ x: at.x, y: at.y + HEIGHT[v.kind] * v.scale + 0.35, z: at.z, text, kind: 'bubble' });
+      out.push({ x: at.x, y: at.y + CREATURE_HEIGHT[v.kind] * v.scale + 0.35, z: at.z, text, kind: 'bubble' });
       if (out.length >= 14) break;
     }
     return out;
@@ -395,10 +374,10 @@ export class Game {
       broke: (x, y, z, state, drop) => {
         if (drop) this.drop(drop.item, drop.count, x, y, z);
         this.particles.burst('break', x + 0.5, y + 0.5, z + 0.5, this.colorOf(state));
-        this.swing = 1;
+        this.hand.swing = 1;
       },
       placed: () => {
-        this.swing = 1;
+        this.hand.swing = 1;
       },
       use: () => this.greet(),
     }, body ? body.distance : REACH);
@@ -440,7 +419,8 @@ export class Game {
       this.seen.push(v);
     }
     this.life.collect(this.seen);
-    this.focus = this.pick(t ? t.t : 6.5);
+    // A creature behind the block being aimed at is out of reach.
+    this.focus = pickCreature(this.seen, this.player.eye, this.player.look, t ? t.t : 6.5);
 
     const eye = this.player.eye;
     const cam = this.camera;
@@ -453,46 +433,6 @@ export class Game {
     this.pool.update(cam.x, cam.y, cam.z);
   }
 
-  /** The nearest creature the view ray meets before `reach` metres. */
-  private pick(reach: number): EntityView | null {
-    const e = this.player.eye;
-    const l = this.player.look;
-    let best: EntityView | null = null;
-    let bestT = reach;
-    for (const v of this.seen) {
-      const dx = v.x - e.x;
-      const dz = v.z - e.z;
-      if (dx * dx + dz * dz > 64) continue;
-      const h = HEIGHT[v.kind] * v.scale;
-      const r = Math.max(0.28, h * 0.3);
-      // Slab test against a box around the creature.
-      let t0 = 0;
-      let t1 = bestT;
-      const lo = [v.x - r, v.y, v.z - r];
-      const hi = [v.x + r, v.y + h, v.z + r];
-      const o = [e.x, e.y, e.z];
-      const d = [l.x, l.y, l.z];
-      let hit = true;
-      for (let a = 0; a < 3 && hit; a++) {
-        if (Math.abs(d[a] as number) < 1e-9) {
-          if ((o[a] as number) < (lo[a] as number) || (o[a] as number) > (hi[a] as number)) hit = false;
-          continue;
-        }
-        let ta = ((lo[a] as number) - (o[a] as number)) / (d[a] as number);
-        let tb = ((hi[a] as number) - (o[a] as number)) / (d[a] as number);
-        if (ta > tb) [ta, tb] = [tb, ta];
-        t0 = Math.max(t0, ta);
-        t1 = Math.min(t1, tb);
-        if (t0 > t1) hit = false;
-      }
-      if (hit && t0 < bestT) {
-        bestT = t0;
-        best = v;
-      }
-    }
-    return best;
-  }
-
   /** The typical colour of a block (linear RGB), for the chips it breaks into. */
   colorOf(state: number): [number, number, number] {
     const tile = (BLOCKS[state]?.tiles[4] ?? 0) * 3;
@@ -500,58 +440,10 @@ export class Game {
     return [a[tile] as number, a[tile + 1] as number, a[tile + 2] as number];
   }
 
-  /** What the player holds, drawn low on the right of the view as if in the hand: it swings with a blow and sways with a stride. */
-  private drawHeld(ents: Renderer['entities'], dt: number): void {
-    this.swing = Math.max(0, this.swing - dt * 5);
-    const held = this.inventory.held;
-    if (!held) return;
-    const cam = this.camera;
-    const p = this.player;
-    const sy = Math.sin(cam.yaw), cy = Math.cos(cam.yaw);
-    const sp = Math.sin(cam.pitch), cp = Math.cos(cam.pitch);
-    // The view's own axes: forward, right (level) and up.
-    const fx = sy * cp, fy = sp, fz = cy * cp;
-    const rx = -cy, rz = sy;
-    const ux = -sy * sp, uy = cp, uz = -cy * sp;
-    const speed = p.onGround ? Math.hypot(p.vx, p.vz) : 0;
-    this.stride += speed * dt;
-    const digging = this.interaction.progress > 0 ? 0.5 + 0.5 * Math.sin(this.elapsed * 17) : 0;
-    const blow = Math.max(this.swing, digging * 0.7);
-    const sway = Math.sin(this.stride * 1.6) * 0.012 * Math.min(1, speed / 3);
-    const ahead = 0.5 + 0.12 * blow;
-    const side = 0.36 - 0.06 * blow + sway;
-    const down = 0.3 + 0.08 * blow + Math.abs(sway) * 0.6;
-    const turn = cam.yaw + 0.62 - 0.5 * blow;
-    this.bodies.item(ents, {
-      x: cam.x + fx * ahead + rx * side - ux * down, y: cam.y + fy * ahead - uy * down, z: cam.z + fz * ahead + rz * side - uz * down,
-      qx: 0, qy: Math.sin(turn / 2), qz: 0, qw: Math.cos(turn / 2),
-    }, held.item, 1, this.env, 0.17);
-  }
-
   /** Put items into the world where a block was, with a small hop so they are seen to come loose. */
   private drop(itemId: number, count: number, x: number, y: number, z: number): void {
     const a = rand3(x, y, z, this.drops++) * Math.PI * 2;
     this.physics.spawnItem(itemId, count, x + 0.5, y + 0.5, z + 0.5, { x: Math.cos(a) * 0.9, y: 2.4, z: Math.sin(a) * 0.9 });
-  }
-
-  /** What physics reports becomes something to see: spray, dust, flying leaves. */
-  private onPhysics(e: PhysicsEvent): void {
-    const cam = this.camera;
-    if ((e.x - cam.x) ** 2 + (e.z - cam.z) ** 2 > 90 * 90) return;
-    const fx = this.particles;
-    switch (e.type) {
-      case 'splash': fx.burst('splash', e.x, e.y, e.z, undefined, clamp(e.strength * 0.4, 0.5, 4)); break;
-      case 'impact':
-        if (e.energy > 1500) fx.burst('dust', e.x, e.y, e.z, DUST[e.material] ?? DUST[0], clamp(e.energy / 20000, 0.5, 4));
-        break;
-      case 'collapse': fx.burst('dust', e.x, e.y, e.z, DUST[1], clamp(e.blocks / 3, 1, 6)); break;
-      case 'burst': {
-        const leaves = (IS_LEAVES[e.state] as number) === 1;
-        fx.burst(leaves ? 'leaves' : 'break', e.x, e.y, e.z, this.colorOf(e.state), leaves ? 0.6 : 1);
-        break;
-      }
-      case 'land': fx.burst('dust', e.x, e.y - 0.4, e.z, this.colorOf(e.state), 0.7); break;
-    }
   }
 
   private render(dt: number): void {
@@ -567,7 +459,8 @@ export class Game {
       if ((v.x - cam.x) ** 2 + (v.z - cam.z) ** 2 < 260 * 260) ents.addEntity(v, this.world, dt);
     }
     this.bodies.draw(ents, this.physics.bodies, this.env, cam.x, cam.z);
-    this.drawHeld(ents, dt);
+    const p = this.player;
+    this.hand.draw(this.bodies, ents, cam, this.inventory.held, this.env, p.onGround ? Math.hypot(p.vx, p.vz) : 0, this.interaction.progress > 0, this.elapsed, dt);
     this.particles.draw(ents, this.world);
     ents.finish();
 
