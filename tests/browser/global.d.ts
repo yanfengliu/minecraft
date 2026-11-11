@@ -21,6 +21,7 @@ declare global {
         fps: number;
         stop(): void;
         world: { get(x: number, y: number, z: number): number; set(x: number, y: number, z: number, state: number): boolean };
+        renderer: { settings: { ssao: boolean; shafts: boolean; bloom: boolean; fxaa: boolean } };
         inventory: { count(item: number): number };
         physics: {
           spawnBlock(state: number, x: number, y: number, z: number): number;

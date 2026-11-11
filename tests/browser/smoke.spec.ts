@@ -156,6 +156,68 @@ test('a frame fits the 60 Hz budget at 1280 x 720', async ({ page }) => {
   expect(ms).toBeLessThan(16.6);
 });
 
+test('ambient occlusion leaves a flat, high-contrast wall alone', async ({ page }) => {
+  await boot(page);
+  // Birch bark is the hardest case in the tile set: black marks on white, each with painted relief.
+  // The wall is flat, so occlusion has nothing to find on it and must not darken it.
+  const r = await page.evaluate(async () => {
+    const t = window.__tidewick!;
+    const g = t.game!;
+    const birch = t.block('birch_log');
+    const s = g.info.spawn;
+    const cx = Math.floor(s.x);
+    const cz = Math.floor(s.z) + 12;
+    const y0 = Math.floor(s.y) + 30;
+    for (let x = cx - 7; x <= cx + 7; x++) for (let y = y0; y <= y0 + 10; y++) g.world.set(x, y, cz, birch);
+    t.setHour(12);
+    t.setWeather('clear');
+    // Looking south at the wall's shaded face, where ambient light (the part occlusion scales) is all there is.
+    t.look(cx + 0.5, y0 + 5.5, cz - 4, 0, 0);
+    // The wall is meshed by workers, whose answers arrive only when this script yields.
+    for (let i = 0; i < 100; i++) {
+      t.step(0.05);
+      await new Promise((done) => setTimeout(done, 30));
+      if (i > 3 && g.pool.pending === 0) break;
+    }
+    t.step(1);
+    const built = g.world.get(cx, y0 + 5, cz) === birch;
+    const mean = (on: boolean): number => {
+      g.renderer.settings.ssao = on;
+      t.step(0.1);
+      const p = t.probe(16, 9);
+      let sum = 0;
+      let n = 0;
+      // The middle of the frame, well inside the wall.
+      for (let row = 2; row <= 6; row++) {
+        for (let col = 4; col <= 11; col++) {
+          const o = (row * 16 + col) * 3;
+          sum += p[o]! + p[o + 1]! + p[o + 2]!;
+          n += 3;
+        }
+      }
+      return sum / n;
+    };
+    // Several frames each way: the pass is dithered per frame.
+    let on = 0;
+    let off = 0;
+    for (let i = 0; i < 4; i++) {
+      on += mean(true);
+      off += mean(false);
+    }
+    // The wall must fill the probed area: its sides and top are far outside it, so every probe is bark.
+    const p = t.probe(16, 9);
+    let bluest = -255;
+    for (let row = 2; row <= 6; row++) for (let col = 4; col <= 11; col++) bluest = Math.max(bluest, p[(row * 16 + col) * 3 + 2]! - p[(row * 16 + col) * 3]!);
+    return { on: on / 4, off: off / 4, built, bluest };
+  });
+  console.log(`flat wall: ${r.on.toFixed(1)} with occlusion, ${r.off.toFixed(1)} without (bluest probe ${r.bluest})`);
+  expect(r.built).toBe(true);
+  // Sky is far bluer than bark in shade: if any probe is that blue, the wall was not drawn.
+  expect(r.bluest).toBeLessThan(40);
+  expect(r.off).toBeGreaterThan(40);
+  expect(Math.abs(r.on - r.off) / r.off).toBeLessThan(0.03);
+});
+
 test('things fall: a block, a pile of sand, and a dropped loaf the player picks up', async ({ page }) => {
   const errors = await boot(page);
   const r = await page.evaluate(() => {
