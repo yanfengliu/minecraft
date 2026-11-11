@@ -156,6 +156,59 @@ test('a frame fits the 60 Hz budget at 1280 x 720', async ({ page }) => {
   expect(ms).toBeLessThan(16.6);
 });
 
+test('things fall: a block, a pile of sand, and a dropped loaf the player picks up', async ({ page }) => {
+  const errors = await boot(page);
+  const r = await page.evaluate(() => {
+    const t = window.__tidewick!;
+    const g = t.game!;
+    const stone = t.block('stone');
+    const sand = t.block('sand');
+    const bread = t.item('bread');
+    // A stone stage well above the trees, so the lie of the land cannot change the result.
+    const s = g.info.spawn;
+    const cx = Math.floor(s.x) + 8;
+    const cz = Math.floor(s.z);
+    const top = Math.floor(s.y) + 24;
+    for (let x = cx - 3; x <= cx + 3; x++) for (let z = cz - 3; z <= cz + 3; z++) g.world.set(x, top, z, stone);
+    t.step(0.2);
+
+    const id = g.physics.spawnBlock(stone, cx + 0.5, top + 5.5, cz + 0.5);
+    g.world.set(cx + 2, top + 4, cz, sand);
+    const body = () => g.physics.bodies.find((b) => b.id === id);
+    const y0 = body()!.y;
+    t.step(0.3);
+    const fell = y0 - body()!.y;
+    t.step(5);
+    const rest = body();
+    const before = g.inventory.count(bread);
+    const p = g.player;
+    g.physics.spawnItem(bread, 3, p.x, p.y + 1, p.z);
+    t.step(0.6);
+    return {
+      fell,
+      // Square on the stage, the stone goes back into the grid; had it landed crooked it would lie there asleep.
+      landed: rest ? rest.sleeping && Math.abs(rest.y - (top + 1.5)) < 0.1 : g.world.get(cx, top + 1, cz) === stone,
+      awake: g.physics.stats.awakeBodies,
+      falling: g.physics.stats.falling,
+      sandLeft: g.world.get(cx + 2, top + 4, cz) === 0,
+      sandLanded: g.world.get(cx + 2, top + 1, cz) === sand,
+      picked: g.inventory.count(bread) - before,
+      stepMs: g.physics.stats.stepMs,
+    };
+  });
+  console.log('physics', JSON.stringify(r));
+  // Free fall for 0.3 s is 0.44 m.
+  expect(r.fell).toBeGreaterThan(0.3);
+  expect(r.fell).toBeLessThan(0.6);
+  expect(r.landed).toBe(true);
+  expect(r.awake).toBe(0);
+  expect(r.falling).toBe(0);
+  expect(r.sandLeft).toBe(true);
+  expect(r.sandLanded).toBe(true);
+  expect(r.picked).toBe(3);
+  expect(errors).toEqual([]);
+});
+
 test('the full island holds a village and still fits the frame budget', async ({ page }) => {
   const errors = await boot(page, FULL);
   await page.waitForFunction(() => window.__tidewick!.game!.pool.pending === 0, undefined, { timeout: 120_000 });

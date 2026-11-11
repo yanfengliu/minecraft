@@ -10,7 +10,10 @@ export default defineConfig({
   build: {
     target: 'es2023',
     sourcemap: true,
-    chunkSizeWarningLimit: 4096,
+    // The physics chunk carries Rapier's WebAssembly inline (4.4 MB, 1.7 MB gzipped). It is loaded on
+    // its own while the island generates, so the limit is set just above it: anything else that grows
+    // this large should still warn.
+    chunkSizeWarningLimit: 4700,
   },
   test: {
     include: ['src/**/*.test.ts'],

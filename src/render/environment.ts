@@ -148,8 +148,9 @@ export class Environment {
     const moonGlow = this.moonLit * moonUp * (1 - 0.7 * cover);
     const aim = lerp(0.1 + 0.3 * moonGlow, 1.43, Math.pow(day, 1.8)) * (1 - 0.3 * cover * day);
     let target = Math.min(Math.max(aim / Math.max(scene, 1e-5), 0.3), 300);
-    // Out of the daylight (a cave, a shuttered room) the eye opens up.
-    target *= lerp(1, 2.4, (1 - eyeSky) * day * (1 - eyeBlock));
+    // Out of the daylight (under trees, in a room, down a cave) the eye opens up, and it starts to as
+    // soon as the sky is partly hidden: a forest floor at noon should not read as night.
+    target *= lerp(1, 2.6, (1 - eyeSky * eyeSky) * day * (1 - eyeBlock));
     // Ease in stops, not in linear light, so a jump of a hundredfold is as smooth as one of two.
     this.exposure = dt > 0 ? Math.exp(damp(Math.log(this.exposure), Math.log(target), 1.8, dt)) : target;
     this.preExposure = Math.min(1, EXPOSURE_REF / this.exposure);

@@ -40,10 +40,11 @@ export class Interaction {
   private breaking: { x: number; y: number; z: number } | null = null;
   private placeCooldown = 0;
 
-  update(dt: number, input: Input, player: Player, world: World, inv: Inventory, hooks: InteractionHooks = {}): void {
+  /** `reach` shortens the arm when something that is not a block (a loose body) is in the way. */
+  update(dt: number, input: Input, player: Player, world: World, inv: Inventory, hooks: InteractionHooks = {}, reach = REACH): void {
     const e = player.eye;
     const l = player.look;
-    this.target = raycast(world, e.x, e.y, e.z, l.x, l.y, l.z, REACH);
+    this.target = raycast(world, e.x, e.y, e.z, l.x, l.y, l.z, Math.min(reach, REACH));
     this.placeCooldown = Math.max(0, this.placeCooldown - dt);
 
     // --- breaking ---

@@ -542,7 +542,7 @@ export class Renderer {
     if (this.entities.count > 0) {
       gl.enable(gl.CULL_FACE);
       gl.cullFace(gl.BACK);
-      this.pEntity.use();
+      this.pEntity.use().tex('uTiles', 0, gl.TEXTURE_2D_ARRAY, this.tiles);
       this.entities.draw();
       stats.triangles += this.entities.count * 12;
       stats.drawCalls++;

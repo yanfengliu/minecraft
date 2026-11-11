@@ -214,7 +214,8 @@ void main() {
   shadow = mix(1.0, shadow, uLightDir.w) * cloudShadow(world);
 
   float occl = mix(0.42, 1.0, ao) * ssao;
-  float skyVis = sky * sky;
+  // Between linear and square: under a canopy or by a window the eye still finds plenty of light.
+  float skyVis = sky * sqrt(sky);
 
   // Key light.
   vec3 direct = uLightColor.rgb * lambert * shadow * mix(1.0, occl, 0.35);

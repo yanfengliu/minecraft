@@ -4,7 +4,9 @@
 import './ui/style.css';
 import { Game } from './game';
 import { REGIMES, type Regime } from './sim/weather';
+import { familyBase } from './world/blocks';
 import { DEFAULT_ISLAND, type IslandConfig } from './world/gen/terrain';
+import { item } from './world/items';
 
 export interface DebugApi {
   ready: boolean;
@@ -22,6 +24,9 @@ export interface DebugApi {
   /** Render a frame and return a coarse grid of its pixels (r, g, b bytes, top row first). */
   probe(cols?: number, rows?: number): number[];
   stats(): Record<string, number | string>;
+  /** The base state id of a block family, and the id of an item, by name: for scripts that edit the world. */
+  block(name: string): number;
+  item(name: string): number;
 }
 
 declare global {
@@ -84,6 +89,8 @@ const api: DebugApi = {
       pendingMeshes: g.pool.pending, clock: g.clock.format(), weather: g.weather.regime, exposure: Number(g.env.exposure.toFixed(3)),
     };
   },
+  block: (name) => familyBase(name),
+  item: (name) => item(name).id,
 };
 window.__tidewick = api;
 

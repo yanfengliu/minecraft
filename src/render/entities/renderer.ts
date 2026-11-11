@@ -9,8 +9,8 @@ import type { GL } from '../gl';
 import { type Model, animalModel, personModel } from './models';
 import { CHANNEL_INDEX, type Pose, computePose, makePose } from './pose';
 
-/** Floats per instance: three rows of a 3x4 transform, then colour rgb and glow, then sky and block light. */
-const STRIDE = 18;
+/** Floats per instance: three rows of a 3x4 transform, colour rgb and glow, sky and block light, then a tile layer for each of the six faces (-1 for a plain box). */
+const STRIDE = 24;
 const PX = 1 / 16;
 
 interface Smoothed {
@@ -75,6 +75,8 @@ export class EntityRenderer {
     attr(4, 4, 8);
     attr(5, 4, 12);
     attr(6, 2, 16);
+    attr(7, 3, 18);
+    attr(8, 3, 21);
     gl.bindVertexArray(null);
   }
 
@@ -99,7 +101,8 @@ export class EntityRenderer {
    * centre and size in the root's units, turned by `rot` (3x3, row-major) about `pivot`.
    */
   private box(root: Float32Array, px: number, py: number, pz: number, rot: Float32Array | null, ox: number, oy: number, oz: number,
-    w: number, h: number, d: number, r: number, g: number, b: number, glow: number, sky: number, block: number): void {
+    w: number, h: number, d: number, r: number, g: number, b: number, glow: number, sky: number, block: number,
+    tiles: readonly number[] | null = null): void {
     const o = this.reserve();
     const out = this.data;
     for (let row = 0; row < 3; row++) {
@@ -124,6 +127,7 @@ export class EntityRenderer {
     out[o + 15] = glow;
     out[o + 16] = sky;
     out[o + 17] = block;
+    for (let f = 0; f < 6; f++) out[o + 18 + f] = tiles ? (tiles[f] as number) : -1;
   }
 
   private readonly root = new Float32Array(12);
@@ -201,17 +205,19 @@ export class EntityRenderer {
 
   /**
    * Add a free box in world space: centre, half extents along its own axes,
-   * orientation as a quaternion, linear colour. Used for loose blocks and items.
+   * orientation as a quaternion, linear colour. Used for loose blocks, items and
+   * particles. With `tiles` (a block's six tile layers, in face order) the box
+   * is textured like that block and the colour becomes its seasonal tint.
    */
   addBox(x: number, y: number, z: number, hx: number, hy: number, hz: number, qx: number, qy: number, qz: number, qw: number,
-    r: number, g: number, b: number, sky: number, block: number, glow = 0): void {
+    r: number, g: number, b: number, sky: number, block: number, glow = 0, tiles: readonly number[] | null = null): void {
     const root = this.root;
     const xx = qx * qx, yy = qy * qy, zz = qz * qz;
     const xy = qx * qy, xz = qx * qz, yz = qy * qz, wx = qw * qx, wy = qw * qy, wz = qw * qz;
     root[0] = 1 - 2 * (yy + zz); root[1] = 2 * (xy - wz); root[2] = 2 * (xz + wy); root[3] = x;
     root[4] = 2 * (xy + wz); root[5] = 1 - 2 * (xx + zz); root[6] = 2 * (yz - wx); root[7] = y;
     root[8] = 2 * (xz - wy); root[9] = 2 * (yz + wx); root[10] = 1 - 2 * (xx + yy); root[11] = z;
-    this.box(root, 0, 0, 0, null, 0, 0, 0, hx * 2, hy * 2, hz * 2, r, g, b, glow, sky, block);
+    this.box(root, 0, 0, 0, null, 0, 0, 0, hx * 2, hy * 2, hz * 2, r, g, b, glow, sky, block, tiles);
   }
 
   /** Forget the eased state of creatures that have gone, and send this frame's boxes to the GPU. */

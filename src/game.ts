@@ -1,11 +1,13 @@
 // Wires the world, the simulations and the renderer together and runs the loop.
 
 import { clamp } from './core/math';
-import { Rng } from './core/rng';
+import { Rng, rand3 } from './core/rng';
+import type { Physics, PhysicsEvent } from './physics';
 import { Input } from './player/input';
-import { Interaction } from './player/interaction';
+import { Interaction, REACH } from './player/interaction';
 import { Inventory } from './player/inventory';
 import { Player } from './player/player';
+import { BodyDrawer } from './render/bodies';
 import { Environment } from './render/environment';
 import { MeshPool } from './render/meshPool';
 import { Particles } from './render/particles';
@@ -15,7 +17,7 @@ import { Clock, SIM_DT } from './sim/clock';
 import { type Regime, Weather } from './sim/weather';
 import { Hud } from './ui/hud';
 import { watchAttachments } from './world/attach';
-import { B, BLOCKS } from './world/blocks';
+import { BLOCKS, IS_LEAVES } from './world/blocks';
 import type { IslandInfo } from './world/gen/island';
 import { DEFAULT_ISLAND, type IslandConfig } from './world/gen/terrain';
 import { dropOf } from './world/items';
@@ -40,6 +42,16 @@ const HEIGHT: Record<EntityKind, number> = {
   villager: 1.8, child: 1.15, sheep: 0.9, cow: 1.3, chicken: 0.5, deer: 1.45, rabbit: 0.45, fox: 0.6, wolf: 0.95, boar: 0.85,
   songbird: 0.3, crow: 0.35, gull: 0.35, duck: 0.4, fish: 0.3,
 };
+
+/** The colour of the dust each material throws up when something made of it lands hard; indexed like `MATERIALS`. */
+const DUST: readonly (readonly [number, number, number])[] = [
+  [0.4, 0.4, 0.4], [0.42, 0.42, 0.42], [0.3, 0.22, 0.14], [0.6, 0.52, 0.34], [0.4, 0.39, 0.37], [0.4, 0.28, 0.15], [0.2, 0.36, 0.12], [0.22, 0.38, 0.14],
+  [0.7, 0.68, 0.62], [0.7, 0.8, 0.82], [0.45, 0.46, 0.48], [0.6, 0.5, 0.2], [0.45, 0.24, 0.17], [0.6, 0.72, 0.8], [0.9, 0.92, 0.95], [0.5, 0.36, 0.27],
+];
+/** How far from the player's middle a dropped item is picked up, in metres. */
+const PICKUP_RADIUS = 1.45;
+/** Seconds of holding the button on a piece of rubble before it breaks into its blocks. */
+const RUBBLE_TIME = 0.35;
 
 function generate(config: IslandConfig): Promise<GenResult> {
   return new Promise((resolve, reject) => {
@@ -67,6 +79,7 @@ export class Game {
   readonly inventory = new Inventory();
   readonly interaction = new Interaction();
   readonly particles = new Particles();
+  readonly physics: Physics;
   readonly camera: Camera;
   readonly hud: Hud;
   /** Simulated seconds per real second. */
@@ -87,16 +100,23 @@ export class Game {
   private elapsed = 0;
   private running = false;
   private readonly seen: EntityView[] = [];
+  private readonly bodies: BodyDrawer;
+  /** The piece of rubble the player is hitting, and for how long. */
+  private rubble = { id: -1, held: 0 };
+  /** Seconds before items are picked up again, after a pick-up that did not fit in the pack. */
+  private pickupWait = 0;
+  private drops = 0;
 
-  private constructor(canvas: HTMLCanvasElement, gen: GenResult) {
-    this.world = World.fromData(gen.world);
+  private constructor(canvas: HTMLCanvasElement, gen: GenResult, world: World, physics: Physics) {
+    this.world = world;
     this.info = gen.info;
     this.plan = gen.plan;
-    // Light is repaired first after any edit, so everything else that reacts to a change sees current light.
-    new LightEngine(this.world).attach();
-    watchAttachments(this.world, (_x, _y, _z, state) => {
+    this.physics = physics;
+    this.bodies = new BodyDrawer(world);
+    physics.events.on((e) => this.onPhysics(e));
+    watchAttachments(this.world, (x, y, z, state) => {
       const d = dropOf(state);
-      if (d) this.inventory.add(d.id, 1);
+      if (d) this.drop(d.id, 1, x, y, z);
     });
     this.renderer = new Renderer(canvas, this.world);
     this.world.changed.on(() => {
@@ -121,9 +141,14 @@ export class Game {
 
   static async create(canvas: HTMLCanvasElement, progress: Progress, config: IslandConfig = DEFAULT_ISLAND): Promise<Game> {
     progress('Raising the island', 0.05);
-    const gen = await generate(config);
+    // The physics library is large, so it loads in its own chunk while the island is being raised.
+    const [gen, { Physics: PhysicsLayer }] = await Promise.all([generate(config), import('./physics')]);
     progress('Shaping the land', 0.55);
-    const game = new Game(canvas, gen);
+    const world = World.fromData(gen.world);
+    // Light is repaired first after any edit, so everything else that reacts to a change sees current light.
+    new LightEngine(world).attach();
+    const physics = await PhysicsLayer.create(world, { seed: gen.info.config.seed, now: () => performance.now() });
+    const game = new Game(canvas, gen, world, physics);
     game.pool.queueAll();
     const total = game.world.sectionCount;
     await new Promise<void>((resolve) => {
@@ -266,7 +291,12 @@ export class Game {
 
   /** Extra lines for the F3 readout. */
   debugLines(): string[] {
-    return [`${this.seen.length} creatures · ${this.renderer.entities.count} boxes`, `exposure ${this.env.exposure.toFixed(2)}`];
+    const s = this.physics.stats;
+    return [
+      `${this.seen.length} creatures · ${this.renderer.entities.count} boxes`,
+      `physics ${s.stepMs.toFixed(2)} ms · ${s.bodies} bodies (${s.awakeBodies} awake) · ${s.falling} falling · ${s.fluidActive} water cells`,
+      `exposure ${this.env.exposure.toFixed(2)}`,
+    ];
   }
 
   private update(dt: number): void {
@@ -282,13 +312,43 @@ export class Game {
       }
     }
 
-    this.player.update(dt, this.input, this.world, (x, y, z) => this.flowAt(x, y, z));
-    this.interaction.update(dt, this.input, this.player, this.world, this.inventory, {
+    const p = this.player;
+    p.update(dt, this.input, this.world, (x, y, z) => this.physics.flowAt(x, y, z));
+    // Rubble that came to rest out of square is a body, not a block, and the block ray cannot see it:
+    // whichever of the two the crosshair meets first is the one the player is working on.
+    const e = p.eye;
+    const l = p.look;
+    const body = this.input.enabled ? this.physics.pickBody(e.x, e.y, e.z, l.x, l.y, l.z, REACH) : null;
+    this.interaction.update(dt, this.input, p, this.world, this.inventory, {
       broke: (x, y, z, state, drop) => {
-        if (drop) this.inventory.add(drop.item, drop.count);
+        if (drop) this.drop(drop.item, drop.count, x, y, z);
         this.particles.burst('break', x + 0.5, y + 0.5, z + 0.5, this.colorOf(state));
       },
-    });
+    }, body ? body.distance : REACH);
+    if (body && !this.interaction.target && this.input.buttons.has(0)) {
+      if (this.rubble.id !== body.id) this.rubble = { id: body.id, held: 0 };
+      this.rubble.held += dt;
+      if (this.rubble.held >= RUBBLE_TIME && this.physics.breakBody(body.id)) this.rubble.id = -1;
+    } else {
+      this.rubble.id = -1;
+    }
+
+    // Physics runs in real time whatever the calendar's speed: water and falling stone do not hurry with the clock.
+    if (!this.paused) {
+      this.physics.setPusher(p.x, p.y, p.z, 0.3, 1.8);
+      this.physics.step(dt);
+      this.pickupWait = Math.max(0, this.pickupWait - dt);
+      if (this.pickupWait === 0) {
+        for (const s of this.physics.collectItems(p.x, p.y + 0.9, p.z, PICKUP_RADIUS)) {
+          const left = this.inventory.add(s.item, s.count);
+          if (left > 0) {
+            // A full pack: put back what did not fit and leave it lying for a few seconds.
+            this.physics.spawnItem(s.item, left, p.x, p.y + 1, p.z, { x: l.x * 2.5, y: 1.5, z: l.z * 2.5 });
+            this.pickupWait = 4;
+          }
+        }
+      }
+    }
     this.particles.windX = this.weather.windX;
     this.particles.windZ = this.weather.windZ;
     this.particles.update(dt, this.world);
@@ -362,14 +422,30 @@ export class Game {
     return [a[tile] as number, a[tile + 1] as number, a[tile + 2] as number];
   }
 
-  /** The push of flowing water at a point: river cells carry their baked direction. */
-  private flowAt(x: number, y: number, z: number): { x: number; z: number } {
-    const s = this.world.get(Math.floor(x), Math.floor(y), Math.floor(z));
-    if (s >= B.river && s < B.river + 8) {
-      const a = ((s - B.river) * Math.PI) / 4;
-      return { x: Math.cos(a) * 1.5, z: -Math.sin(a) * 1.5 };
+  /** Put items into the world where a block was, with a small hop so they are seen to come loose. */
+  private drop(itemId: number, count: number, x: number, y: number, z: number): void {
+    const a = rand3(x, y, z, this.drops++) * Math.PI * 2;
+    this.physics.spawnItem(itemId, count, x + 0.5, y + 0.5, z + 0.5, { x: Math.cos(a) * 0.9, y: 2.4, z: Math.sin(a) * 0.9 });
+  }
+
+  /** What physics reports becomes something to see: spray, dust, flying leaves. */
+  private onPhysics(e: PhysicsEvent): void {
+    const cam = this.camera;
+    if ((e.x - cam.x) ** 2 + (e.z - cam.z) ** 2 > 90 * 90) return;
+    const fx = this.particles;
+    switch (e.type) {
+      case 'splash': fx.burst('splash', e.x, e.y, e.z, undefined, clamp(e.strength * 0.4, 0.5, 4)); break;
+      case 'impact':
+        if (e.energy > 1500) fx.burst('dust', e.x, e.y, e.z, DUST[e.material] ?? DUST[0], clamp(e.energy / 20000, 0.5, 4));
+        break;
+      case 'collapse': fx.burst('dust', e.x, e.y, e.z, DUST[1], clamp(e.blocks / 3, 1, 6)); break;
+      case 'burst': {
+        const leaves = (IS_LEAVES[e.state] as number) === 1;
+        fx.burst(leaves ? 'leaves' : 'break', e.x, e.y, e.z, this.colorOf(e.state), leaves ? 0.6 : 1);
+        break;
+      }
+      case 'land': fx.burst('dust', e.x, e.y - 0.4, e.z, this.colorOf(e.state), 0.7); break;
     }
-    return { x: 0, z: 0 };
   }
 
   private render(dt: number): void {
@@ -384,6 +460,7 @@ export class Game {
     for (const v of this.seen) {
       if ((v.x - cam.x) ** 2 + (v.z - cam.z) ** 2 < 260 * 260) ents.addEntity(v, this.world, dt);
     }
+    this.bodies.draw(ents, this.physics.bodies, this.env, cam.x, cam.z);
     this.particles.draw(ents, this.world);
     ents.finish();
 

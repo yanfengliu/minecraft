@@ -22,7 +22,7 @@ out vec3 vWorld;
 out vec2 vUV;
 out vec2 vLight;
 flat out float vLayer;
-flat out uint vBits;   // normal index | flowDir << 3 | hasFlow << 6 | isWater << 7
+flat out uint vBits;   // normal index | flowDir << 3 | hasFlow << 6 | isWater << 7 | spilt << 8
 
 void main() {
 #ifdef OCEAN
@@ -48,7 +48,7 @@ void main() {
   else if (n == 4u) uv = vec2(local.x, -local.y);
   else uv = vec2(-local.x, -local.y);
   vUV = uv;
-  vBits = n | (water ? (((w1 >> 23) & 15u) << 3) | 128u : 0u);
+  vBits = n | (water ? (((w1 >> 23) & 15u) << 3) | 128u | (((w1 >> 27) & 1u) << 8) : 0u);
 #endif
   gl_Position = uViewProj * vec4(vWorld, 1.0);
 }
@@ -251,9 +251,14 @@ void main() {
   // Foam where the water runs out against a shore or over a drop.
   if (top) {
     float below_ = vWorld.y - worldFromDepth(suv, sceneD).y;
-    float edge = 1.0 - smoothstep(0.0, flowing ? 0.5 : 0.32, below_);
+    // Surf belongs to the sea and to running rivers. A pond is calm, and spilt water is shallow
+    // everywhere, so without this a puddle would be one sheet of foam.
+    bool spilt = (vBits & 256u) != 0u;
+    float surf = spilt ? 0.0 : flowing ? 1.0 : 1.0 - smoothstep(0.3, 0.8, abs(vWorld.y - uClip.z));
+    float edge = (1.0 - smoothstep(0.0, flowing ? 0.5 : 0.32, below_)) * surf;
     float lace = valueNoise(p * 2.6 + vec2(t * 0.3, 0.0)) * 0.6 + valueNoise(p * 7.0 - vec2(0.0, t * 0.5)) * 0.4;
-    float foam = smoothstep(0.42, 0.75, edge * 0.75 + lace * edge + (flowing ? 0.12 * lace : 0.0));
+    // A river over its shallows breaks into streaks and patches, not the solid band of a beach.
+    float foam = smoothstep(0.42, 0.75, flowing ? edge * (0.22 + 0.62 * lace) + 0.12 * lace : edge * 0.75 + lace * edge);
     color = mix(color, (uAmbientSky.rgb * 1.6 + uLightColor.rgb * ndlUp * shadow) * 0.82, foam * 0.85);
   } else {
     float streak = valueNoise(vec2(dot(vWorld.xz, vec2(3.1, 2.3)), vWorld.y * 1.6 + t * 5.0));

@@ -6,7 +6,7 @@
 //
 //   word 0   x:10 y:10 z:10 (sixteenths of a block within the section) | ao:2
 //   word 1   normal:3 | tile:10 | sky:5 | block:5 | uvMode:1 | corner:2 | uvRot:1 | tint:2 | wind:2 | windFree:1
-//   water    normal:3 | (unused):10 | sky:5 | block:5 | flowDir:3 | hasFlow:1 | (unused):4 | isWater:1 (bit 31)
+//   water    normal:3 | (unused):10 | sky:5 | block:5 | flowDir:3 | hasFlow:1 | spilt:1 | (unused):3 | isWater:1 (bit 31)
 //
 // Texture coordinates are derived from position in the shader (so partial
 // boxes show the matching part of the tile); `uvMode` switches to the explicit
@@ -419,6 +419,8 @@ function emitLiquid(states: Uint16Array, light: Uint8Array, idx: number, state: 
       const dir = ((Math.round(Math.atan2(-gz, gx) / (Math.PI / 4)) % 8) + 8) % 8;
       flowBits = (dir << 23) | (1 << 26);
     }
+    // Spilt water is shallow everywhere; the shader must not take that for a shoreline.
+    flowBits |= 1 << 27;
   }
   const waterBit = 0x80000000;
   ao4[0] = ao4[1] = ao4[2] = ao4[3] = 3;

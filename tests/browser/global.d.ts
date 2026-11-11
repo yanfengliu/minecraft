@@ -20,6 +20,14 @@ declare global {
         pool: { pending: number };
         fps: number;
         stop(): void;
+        world: { get(x: number, y: number, z: number): number; set(x: number, y: number, z: number, state: number): boolean };
+        inventory: { count(item: number): number };
+        physics: {
+          spawnBlock(state: number, x: number, y: number, z: number): number;
+          spawnItem(item: number, count: number, x: number, y: number, z: number): number;
+          bodies: readonly { id: number; kind: string; y: number; sleeping: boolean }[];
+          stats: { bodies: number; awakeBodies: number; falling: number; stepMs: number };
+        };
       } | null;
       look(x: number, y: number, z: number, yawDeg: number, pitchDeg: number): void;
       setHour(hour: number): void;
@@ -28,6 +36,8 @@ declare global {
       step(seconds: number): void;
       probe(cols?: number, rows?: number): number[];
       stats(): Record<string, number | string>;
+      block(name: string): number;
+      item(name: string): number;
     };
   }
 }
