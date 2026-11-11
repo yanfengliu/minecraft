@@ -228,6 +228,8 @@ export class Animal implements EntityView {
   // --- death ---
   /** Clock time the body is cleared away. */
   removeAt = 0;
+  /** Brought down by a hunter's arrow and not yet fetched: the body is the hunter's to take. */
+  shot = false;
 
   constructor(sp: Species, group: Group) {
     this.sp = sp;

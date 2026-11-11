@@ -32,7 +32,7 @@ export interface PathRequest {
 export interface NavOptions {
   /** A* expansions the service may spend per tick across all requests. */
   budgetPerTick?: number;
-  /** Expansions after which one search gives up. */
+  /** Expansions after which a search gives up, for a near goal; a far one is allowed more, by its distance. */
   maxExpansions?: number;
   /** Routes held before the least recently used half is forgotten. */
   cacheLimit?: number;
@@ -74,6 +74,8 @@ const BUCKET_SHIFT = 3;
 const DIRECT_REACH = 12;
 /** Step cost from which ground counts as something to walk round rather than across (farmland is 4). */
 const ROUGH_GROUND = 3;
+/** Expansions allowed per block of straight-line distance; measured routes over hills and round a river need about 110. */
+const EXPANSIONS_PER_BLOCK = 260;
 
 export class Navigator {
   readonly stats: NavStats = { requests: 0, cacheHits: 0, direct: 0, searches: 0, found: 0, failed: 0, expansions: 0, invalidated: 0 };
@@ -221,6 +223,16 @@ export class Navigator {
     return this.routeCount;
   }
 
+  /**
+   * Expansions a search between two columns may spend before it gives up. A
+   * fixed number that suits a village is too few for the country round it: on
+   * the generated island the 200 blocks from the square to the hunting ground
+   * take 18,000 to 23,000, so the allowance grows with the distance.
+   */
+  private limitFor(sx: number, sz: number, gx: number, gz: number): number {
+    return Math.max(this.maxExpansions, Math.round(Math.hypot(gx - sx, gz - sz) * EXPANSIONS_PER_BLOCK));
+  }
+
   // -------------------------------------------------------------------------
 
   private pump(): void {
@@ -248,7 +260,7 @@ export class Navigator {
         }
         this.active = next;
         this.stats.searches++;
-        this.search.begin(next.sx, next.sy, next.sz, next.gx, next.gy, next.gz, this.maxExpansions);
+        this.search.begin(next.sx, next.sy, next.sz, next.gx, next.gy, next.gz, this.limitFor(next.sx, next.sz, next.gx, next.gz));
       }
       const req = this.active;
       const search = this.search;

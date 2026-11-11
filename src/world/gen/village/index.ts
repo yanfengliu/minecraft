@@ -403,23 +403,28 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
   // --- the country around: where the woodcutters, shepherd and hunter go ---
   const survey = (wanted: (biome: number) => boolean, rMin: number, rMax: number, radius: number, fallbackArm: number): Area => {
     let best: Area = { x: cx + (STEP[fallbackArm] as readonly [number, number])[0] * rMin, z: cz + (STEP[fallbackArm] as readonly [number, number])[1] * rMin, radius };
-    let bestScore = 0;
-    for (let r = rMin; r <= rMax; r += 18) {
-      for (let k = 0; k < 20; k++) {
-        const ang = (k / 20) * Math.PI * 2;
+    // Below this nothing found is worth more than the fallback beside the road.
+    let bestScore = 0.25;
+    for (let r = rMin; r <= rMax; r += 14) {
+      for (let k = 0; k < 24; k++) {
+        const ang = (k / 24) * Math.PI * 2;
         const x = Math.round(cx + Math.cos(ang) * r);
         const z = Math.round(cz + Math.sin(ang) * r);
         if (!inside(x, z) || wet(x, z)) continue;
-        let score = 0;
+        let hits = 0;
+        let samples = 0;
         for (let dz = -radius; dz <= radius; dz += 5) {
           for (let dx = -radius; dx <= radius; dx += 5) {
             const qx = x + dx;
             const qz = z + dz;
-            if (inside(qx, qz) && !wet(qx, qz) && reserved[at(qx, qz)] === 0 && wanted(t.biome[at(qx, qz)] as number)) score++;
+            samples++;
+            if (inside(qx, qz) && !wet(qx, qz) && reserved[at(qx, qz)] === 0 && wanted(t.biome[at(qx, qz)] as number)) hits++;
           }
         }
-        // Nearer is better, all else equal.
-        score -= r / 60;
+        // How much of the place is the ground wanted, less a charge for the walk: it is walked there and
+        // back every working day, so a wood twice as far has to be much the better wood. (Scored by
+        // cover alone, the woodcutters were sent 180 blocks to the island's densest forest.)
+        const score = hits / samples - 0.55 * ((r - rMin) / Math.max(1, rMax - rMin));
         if (score > bestScore) {
           bestScore = score;
           best = { x, z, radius };
@@ -430,7 +435,7 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
   };
   const forest = survey((b) => b === BIOME_FOREST || b === BIOME_PINE, 70, 190, 34, N);
   const pasture = survey((b) => b === BIOME_MEADOW, 66, 150, 20, E);
-  const hunting = survey((b) => b === BIOME_FOREST || b === BIOME_PINE || b === BIOME_HIGHLAND, 150, 300, 55, N);
+  const hunting = survey((b) => b === BIOME_FOREST || b === BIOME_PINE || b === BIOME_HIGHLAND, 105, 260, 55, N);
 
   const standOnRoad = (x: number, z: number): Cell => ({ x, y: (roadY[at(x, z)] >= 0 ? (roadY[at(x, z)] as number) : ground(x, z)) + 1, z });
   const patrol: Cell[] = [];

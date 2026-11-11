@@ -222,19 +222,32 @@ describe('village facade', () => {
   it('fishes and hunts through the wildlife api when there is one', () => {
     let casts = 0;
     let caught = 0;
-    let killed = 0;
+    let shot = 0;
+    let fetched = 0;
+    let closest = Infinity;
     let nextId = 100_000;
+    // One deer at a time stands on the hunting ground; a fallen one lies until it is fetched.
     let deer: EntityView | null = null;
+    const fallen = new Map<number, EntityView>();
     const wildlife: WildlifeApi = {
       findAnimal(x, z, radius, kinds) {
         if (!kinds.includes('deer')) return null;
         deer ??= { id: nextId++, kind: 'deer', look: 0, role: 0, x: 104.5, y: 32, z: 100.5, yaw: 0, anim: 'idle', animTime: 0, scale: 1, held: -1, bubble: '' };
         return Math.hypot(deer.x - x, deer.z - z) <= radius ? deer : null;
       },
-      harvest(id) {
-        if (!deer || deer.id !== id) return null;
+      shoot(id, fromX, fromZ) {
+        if (!deer || deer.id !== id) return false;
+        closest = Math.min(closest, Math.hypot(deer.x - fromX, deer.z - fromZ));
+        deer.anim = 'dead';
+        fallen.set(id, deer);
         deer = null;
-        killed++;
+        shot++;
+        return true;
+      },
+      harvest(id) {
+        // The hunter never lays a hand on a living animal: only what was shot can be taken.
+        if (!fallen.delete(id)) return null;
+        fetched++;
         return { meat: 3, hide: 1 };
       },
       fishAbundance: () => 0.8,
@@ -254,11 +267,16 @@ describe('village facade', () => {
     h.runTo(0, 18.5);
     expect(casts).toBeGreaterThan(4);
     expect(sim.stats.fishCaught).toBe(caught);
-    expect(killed).toBeGreaterThan(0);
-    expect(sim.stats.animalsHunted).toBe(killed);
+    expect(shot).toBeGreaterThan(0);
+    expect(sim.stats.animalsHunted).toBe(shot);
+    // Shot from bowshot, never from where a deer would long since have run; and what fell was walked to and brought in.
+    expect(closest).toBeGreaterThan(8);
+    expect(closest).toBeLessThanOrEqual(28);
+    expect(fetched).toBeGreaterThan(0);
+    expect(shot - fetched).toBeLessThanOrEqual(1);
     const carried = sim.core.residents.filter((r) => r.job === hunter).reduce((n, r) => n + r.pack[G.meat]!, 0);
     expect(hunter.stock[G.meat]! + carried + sim.economy.villageStock(G.meat)).toBeGreaterThan(meat);
-    expect(sim.economy.produced[G.meat]).toBe(killed * 3);
+    expect(sim.economy.produced[G.meat]).toBe(fetched * 3);
   });
 
   it('falls back to plain luck for fishing and hunting without wildlife', () => {

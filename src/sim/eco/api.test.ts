@@ -103,6 +103,52 @@ describe('finding and taking game', () => {
     expect(rig.eco.views.some((v) => v.anim === 'dead')).toBe(false);
   });
 
+  it('an animal shot from a distance lies where it fell until the hunter comes for it, and its herd runs', () => {
+    const rig = makeRig({ ...only({ deer: 6 }), startDay: 8, startHour: 10, weather: 'clear' });
+    rig.days(0.01);
+    const { shoot, harvest, findAnimal } = rig.eco.wildlife;
+    const deer = rig.living('deer')[0] as EntityView;
+    const herd = rig.living('deer').filter((v) => v !== deer && Math.hypot(v.x - deer.x, v.z - deer.z) < 20);
+    expect(herd.length).toBeGreaterThan(0);
+    // The archer stands eighteen blocks off: outside the distance at which a deer runs from a person.
+    const fromX = deer.x + 18;
+    const fromZ = deer.z;
+    const before = herd.map((v) => Math.hypot(v.x - fromX, v.z - fromZ));
+    expect(shoot(deer.id, fromX, fromZ)).toBe(true);
+    expect(deer.anim).toBe('dead');
+    expect(rig.count('deer')).toBe(5);
+    expect(rig.row('deer').hunted).toBe(1);
+    // Already down: a second arrow does nothing, and it is no longer among the living to be found.
+    expect(shoot(deer.id, fromX, fromZ)).toBe(false);
+    expect(findAnimal(deer.x, deer.z, 400, ['deer'])).not.toBe(deer);
+
+    // The rest saw it fall and ran from where the arrow came.
+    rig.ticks(40);
+    const fled = herd.filter((v, i) => Math.hypot(v.x - fromX, v.z - fromZ) > (before[i] as number) + 6);
+    expect(fled.length).toBe(herd.length);
+
+    // It lies long enough to be walked to, and is the hunter's to take, once.
+    rig.ticks(600);
+    expect(rig.eco.views.includes(deer)).toBe(true);
+    expect(harvest(deer.id)).toEqual({ meat: 5, hide: 2 });
+    expect(harvest(deer.id)).toBeNull();
+    expect(rig.row('deer').hunted).toBe(1);
+    expect(rig.row('deer').deaths).toBe(1);
+    rig.ticks(60);
+    expect(rig.eco.views.includes(deer)).toBe(false);
+  });
+
+  it('a kill left lying is cleared away in the end, and then there is nothing to take', () => {
+    const rig = makeRig({ ...only({ boar: 4 }), startDay: 8, startHour: 10, weather: 'clear' });
+    const boar = rig.living('boar')[0] as EntityView;
+    expect(rig.eco.wildlife.shoot(boar.id, boar.x + 15, boar.z)).toBe(true);
+    rig.ticks(2500);
+    expect(rig.eco.views.includes(boar)).toBe(false);
+    expect(rig.eco.wildlife.harvest(boar.id)).toBeNull();
+    expect(rig.eco.wildlife.shoot(boar.id, boar.x + 15, boar.z)).toBe(false);
+    expect(rig.row('boar').hunted).toBe(1);
+  });
+
   it('a young animal yields less than a grown one', () => {
     const rig = makeRig({ ...only({ deer: 12 }), startDay: 0 });
     rig.days(4.2);

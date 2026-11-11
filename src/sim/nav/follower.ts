@@ -128,8 +128,11 @@ export function stepMover(m: Mover, world: World, doors: Doors): number {
       const k = left / d;
       v.x += dx * k;
       v.z += dz * k;
-      // Hold the old height until near the edge of the cell, then rise or drop quickly: a step, not a ramp.
-      v.y = m.fromH + (m.toH - m.fromH) * smoothstep(0.25, 0.75, 1 - (d - left) / m.segLen);
+      // A step, not a ramp, and taken on the right side of the edge: going up, the feet are on the upper level
+      // before the body crosses onto it; going down, they stay on it until the body has left. (Taken across
+      // the edge, half and half, a walker's legs sank half a block into every step of a hillside.)
+      const t = 1 - (d - left) / m.segLen;
+      v.y = m.fromH + (m.toH - m.fromH) * (m.toH > m.fromH ? smoothstep(0.02, 0.5, t) : smoothstep(0.5, 0.98, t));
       v.animTime += left / m.gait;
       return MOVE_WALKING;
     }

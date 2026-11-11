@@ -36,6 +36,8 @@ const SAPLING_DAYS = 3;
 const SAPLING_GIVE_UP = 14;
 /** Sky light a sapling needs. */
 const SAPLING_LIGHT = 12;
+/** Ticks between one sapling becoming a tree and the next, when several are ready in the same hour. */
+const GROW_SPACING = 20;
 /** Woodland may spread onto grass until it covers this much more than it did at the start. */
 const WOOD_GROWTH = 1.12;
 /** One visit per tick for every this many columns of world, so each column is seen about once a day. */
@@ -93,6 +95,8 @@ export class Flora {
   private last: Tally = emptyTally();
   /** Kinds whose presence holds a sapling back from becoming a tree on top of them. */
   private readonly inTheWay = ALL_KINDS & ~bit(FISH);
+  /** Saplings are being looked over, and one may yet be ready to grow. */
+  private growing = false;
 
   constructor(e: Eco, rng: Rng) {
     this.e = e;
@@ -118,7 +122,11 @@ export class Flora {
       this.last = this.now;
       this.now = emptyTally();
     }
-    if (this.e.tick % 600 === 0) this.growSaplings();
+    // Once an hour the saplings are looked over, and those that are ready come up one at a time, a couple of
+    // seconds apart. Saplings come of age by the day, so several are ready in the same hour; a tree is some
+    // hundreds of block writes, each relit, and all of them in one tick was a frame a tenth of a second long.
+    if (this.e.tick % 600 === 0) this.growing = true;
+    if (this.growing && this.e.tick % GROW_SPACING === 0) this.growing = this.growSapling();
   }
 
   /** The calendar was set forward or back by `days`: the saplings are no older or younger for it. */
@@ -361,8 +369,12 @@ export class Flora {
     return true;
   }
 
-  /** Once an hour: saplings that have stood their days become trees where they have room and sky. */
-  private growSaplings(): void {
+  /**
+   * Look over the saplings and make a tree of the first that has stood its
+   * days and has room and sky. Returns true if one grew, so there may be more
+   * waiting; false once all have been looked at.
+   */
+  private growSapling(): boolean {
     const e = this.e;
     const w = this.world;
     for (const [key, since] of this.saplings) {
@@ -385,7 +397,7 @@ export class Flora {
         if (growTree(w, x, y, z, species, this.rng)) {
           this.saplings.delete(key);
           this.treesGrown++;
-          continue;
+          return true;
         }
       }
       if (age > SAPLING_GIVE_UP) {
@@ -395,5 +407,6 @@ export class Flora {
         this.saplingsLost++;
       }
     }
+    return false;
   }
 }

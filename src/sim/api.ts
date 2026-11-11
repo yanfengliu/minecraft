@@ -71,7 +71,18 @@ export interface InspectInfo {
 export interface WildlifeApi {
   /** Nearest living wild animal of one of these kinds within `radius` blocks, or null. */
   findAnimal(x: number, z: number, radius: number, kinds: readonly EntityKind[]): EntityView | null;
-  /** Kill an animal a hunter has reached. Returns what it yields, or null if it is gone. */
+  /**
+   * Bring an animal down from a distance, as an arrow from (fromX, fromZ) does.
+   * It dies where it is and its body lies there a few minutes for the hunter to
+   * come and `harvest`; the rest of its herd run from where the shot came.
+   * False if it is already gone.
+   */
+  shoot(id: number, fromX: number, fromZ: number): boolean;
+  /**
+   * Take what an animal yields: a living one the hunter has reached, which this
+   * kills, or the body of one shot earlier. Either way the body is carried off.
+   * Null if it is gone, or is a body nobody shot.
+   */
   harvest(id: number): { meat: number; hide: number } | null;
   /** How good the fishing is near a spot, 0 (fished out) .. 1 (teeming). */
   fishAbundance(x: number, z: number): number;

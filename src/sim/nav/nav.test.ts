@@ -168,6 +168,7 @@ describe('pathfinding', () => {
     startPath(m, p!, world, doors);
     let maxY = v.y;
     let biggestJump = 0;
+    let deepest = 0;
     let prev = v.y;
     let result = MOVE_WALKING;
     for (let t = 0; t < 3000 && result === MOVE_WALKING; t++) {
@@ -175,11 +176,47 @@ describe('pathfinding', () => {
       biggestJump = Math.max(biggestJump, Math.abs(v.y - prev));
       prev = v.y;
       maxY = Math.max(maxY, v.y);
+      // How far the feet are below the top of whatever they are over: a walker goes up a step before
+      // crossing onto it and comes down after leaving it, so never inside the edge of a block.
+      const fx = Math.floor(v.x);
+      const fz = Math.floor(v.z);
+      for (let y = Math.floor(v.y); y <= Math.floor(v.y) + 1; y++) {
+        const boxes: number[] = [];
+        world.collisionBoxes(fx, y, fz, boxes);
+        for (let i = 0; i < boxes.length; i += 6) {
+          const inside = v.x >= boxes[i]! && v.x <= boxes[i + 3]! && v.z >= boxes[i + 2]! && v.z <= boxes[i + 5]!;
+          if (inside && boxes[i + 1]! <= v.y) deepest = Math.max(deepest, boxes[i + 4]! - v.y);
+        }
+      }
     }
     expect(result).toBe(MOVE_ARRIVED);
     expect(maxY).toBeCloseTo(G + 2, 5);
     expect(v.y).toBeCloseTo(G, 5);
     expect(biggestJump).toBeLessThan(0.5);
+    expect(deepest).toBeLessThan(0.1);
+  });
+
+  it('gives a search room in proportion to the distance, so a long way round is still found', () => {
+    const world = createFlatWorld(256, 96, 31);
+    // Baffles every eight blocks, open at alternate ends: the only way along is a zigzag through thirty
+    // rooms, and the search has to flood each of them. That is more than the fixed allowance that suits a
+    // village, as the walk from the square to the woods of the generated island was.
+    for (let i = 1; i <= 30; i++) {
+      const open = i % 2 === 0 ? 2 : 93;
+      for (let z = 0; z < 96; z++) if (Math.abs(z - open) > 1) wall(world, i * 8, z, i * 8, z);
+    }
+    const nav = new Navigator(world);
+    const far = find(nav, [4, G, 48], [250, G, 48]);
+    expect(far).not.toBeNull();
+    expect(illegalStep(world, far!)).toBe('');
+    expect(nav.stats.expansions).toBeGreaterThan(18000);
+
+    // A goal a few steps off behind a wall with no way round still costs no more than the fixed allowance.
+    const shut = createFlatWorld(256, 96, 31);
+    for (let z = 0; z < 96; z++) wall(shut, 40, z, 40, z);
+    const near = new Navigator(shut);
+    expect(find(near, [36, G, 48], [44, G, 48])).toBeNull();
+    expect(near.stats.expansions).toBeLessThanOrEqual(14000);
   });
 
   it('wades shallow water but refuses deep water', () => {

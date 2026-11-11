@@ -3,9 +3,9 @@
 // on the wildlife simulation when there is one and on plain luck when there is
 // not. Each falls back to work at its own building in bad weather or darkness.
 
-import { B, IS_LEAVES, IS_LOG, REPLACEABLE, SOLID, isWater } from '../../world/blocks';
+import { B, IS_LEAVES, IS_LOG, OPAQUE, REPLACEABLE, SOLID, isWater } from '../../world/blocks';
 import { SAPLING_OF, type TreeSpecies } from '../../world/gen/trees';
-import type { Area, Cell, EntityKind } from '../api';
+import type { Area, Cell, EntityKind, EntityView } from '../api';
 import { groundLevel, packCell } from '../nav';
 import { act, cue, face, feetY, gaveUp, go } from './agent';
 import type { Core } from './core';
@@ -25,7 +25,25 @@ interface Tree {
   skipUntil: number;
 }
 
-const PREY: readonly EntityKind[] = ['rabbit', 'deer', 'boar', 'duck'];
+/** What the hunter goes after. Not duck: one shot on the water cannot be fetched. */
+const PREY: readonly EntityKind[] = ['rabbit', 'deer', 'boar'];
+/** How far the bow carries with a fair chance, in blocks: farther than any of the game lets a person come before it runs. */
+const BOW_RANGE = 21;
+/** How near the hunter comes before shooting when nothing is in the way: just outside where a deer takes fright. */
+const BOW_STAND = 17.5;
+/** Chance of hitting standing game at no distance; it falls with the square of the range and is more than halved on the move. */
+const BOW_SKILL: Partial<Record<EntityKind, number>> = { deer: 0.9, boar: 0.85, rabbit: 0.6 };
+/** Longest leg of a stalk, in blocks, before looking again at where the quarry has got to. */
+const STALK_LEG = 28;
+/** Legs of a stalk, a miss counting as two, before the beast is given best. */
+const MAX_STALK = 14;
+/** Simulated seconds before the hunter goes out again after giving a beast best. */
+const REST_AFTER_FAILURE = 75;
+/** How far from where the hunter stands game is worth going after when the home ground is empty. */
+const TRACK_RANGE = 150;
+/** Simulated seconds the ground is left alone after a kill: big game, and small. */
+const REST_AFTER_BIG = 150;
+const REST_AFTER_SMALL = 40;
 /** Logs a woodcutter expects from a tree being felled, when judging whether more are wanted. */
 const LOGS_PER_TREE = 6;
 
@@ -330,7 +348,8 @@ export function hunterWork(core: Core, econ: Economy, r: Resident): void {
   if ((r.haul || (r.packCount === 0 && !r.target)) && haul(core, econ, r)) return;
   const wanted = (b.stock[G.meat] as number) + (r.pack[G.meat] as number) < (b.target[G.meat] as number) * FULL
     || (b.stock[G.hide] as number) + (r.pack[G.hide] as number) < (b.target[G.hide] as number) * FULL;
-  if (outdoors && wanted && r.restUntil <= env.now && hunt(core, econ, r)) return;
+  // A kill already down is fetched whatever the light or the weather: it is not left to lie.
+  if ((r.targetId > 0 || (outdoors && wanted && r.restUntil <= env.now)) && hunt(core, econ, r)) return;
   if (r.packKind === PACK_JOB && r.packCount > 0) {
     unloadAtJob(core, r);
     return;
@@ -338,37 +357,110 @@ export function hunterWork(core: Core, econ: Economy, r: Resident): void {
   workshop(core, econ, r);
 }
 
-/** One step of a hunt. Uses `r.target` for the ground being worked and `r.step` to count a chase. */
+/** True when nothing the eye cannot see through stands between a hunter's eye and an animal's body. */
+function sightline(core: Core, from: EntityView, to: EntityView): boolean {
+  const world = core.world;
+  const ox = from.x;
+  const oy = from.y + 1.5;
+  const oz = from.z;
+  const dx = to.x - ox;
+  const dy = to.y + 0.5 - oy;
+  const dz = to.z - oz;
+  const n = Math.ceil(Math.hypot(dx, dy, dz) / 0.4);
+  for (let i = 1; i < n; i++) {
+    const t = i / n;
+    if (OPAQUE[world.get(Math.floor(ox + dx * t), Math.floor(oy + dy * t), Math.floor(oz + dz * t))]) return false;
+  }
+  return true;
+}
+
+/**
+ * One step of a hunt with the bow. The game runs from a person long before
+ * they could lay a hand on it, so the hunter closes to bowshot, no nearer,
+ * shoots, and walks to what falls. Uses `r.step` to count the legs of a stalk
+ * and the arrows spent on it, and, once something is down, `r.targetId` for the
+ * animal's id and `r.target` for where it lies; otherwise `r.target` is the
+ * spot on the hunting ground being watched from.
+ */
 function hunt(core: Core, econ: Economy, r: Resident): boolean {
   const wild = core.ctx.wildlife;
   const area = core.plan.hunting;
   const v = r.view;
   r.outdoor = true;
   if (wild) {
-    const prey = wild.findAnimal(v.x, v.z, 16, PREY) ?? wild.findAnimal(area.x, area.z, area.radius, PREY);
+    if (r.targetId > 0 && r.target) {
+      const body = r.target;
+      const id = r.targetId;
+      if (gaveUp(r, body)) {
+        // It fell where nobody can walk: left for the crows.
+        r.targetId = 0;
+        r.target = null;
+        return false;
+      }
+      r.activity = 'Fetching the kill';
+      if (!go(core, r, body, true, false)) return true;
+      act(core, r, 'work', 8, TOOLS_ITEM, () => {
+        r.targetId = 0;
+        r.target = null;
+        const got = wild.harvest(id);
+        // Nothing, if it lay too long and was cleared away.
+        if (!got) return;
+        gather(econ, r, G.meat, got.meat, PACK_JOB);
+        gather(econ, r, G.hide, got.hide, PACK_JOB);
+        // The ground is left quiet after a kill, and longer after a deer than after a rabbit.
+        r.restUntil = core.env.now + (got.meat >= 3 ? REST_AFTER_BIG : REST_AFTER_SMALL);
+      });
+      return true;
+    }
+    r.targetId = 0;
+    // Whatever is in bowshot already; else what is on the home ground; else the nearest that can be walked to today.
+    const prey = wild.findAnimal(v.x, v.z, BOW_RANGE, PREY) ?? wild.findAnimal(area.x, area.z, area.radius, PREY) ?? wild.findAnimal(v.x, v.z, TRACK_RANGE, PREY);
     if (prey) {
-      if (Math.hypot(prey.x - v.x, prey.z - v.z) <= 3.5) {
+      const d = Math.hypot(prey.x - v.x, prey.z - v.z);
+      if (d <= BOW_RANGE && sightline(core, v, prey)) {
         r.activity = `Taking aim at a ${prey.kind}`;
-        r.view.yaw = Math.atan2(prey.x - v.x, prey.z - v.z);
-        act(core, r, 'work', 4, TOOLS_ITEM, () => {
-          const got = wild.harvest(prey.id);
+        v.yaw = Math.atan2(prey.x - v.x, prey.z - v.z);
+        act(core, r, 'work', 3, TOOLS_ITEM, () => {
+          // It may have moved, or bolted, while the bow was drawn.
+          const reach = Math.hypot(prey.x - v.x, prey.z - v.z);
+          const moving = prey.anim === 'run' || prey.anim === 'fly';
+          const odds = reach > BOW_RANGE * 1.3 ? 0 : (BOW_SKILL[prey.kind] ?? 0.5) * (1 - 0.45 * Math.min(1, reach / BOW_RANGE) ** 2) * (moving ? 0.4 : 1);
+          if (!core.rng.chance(odds) || !wild.shoot(prey.id, v.x, v.z)) {
+            // A miss costs as much patience as two legs of the stalk.
+            r.step += 2;
+            return;
+          }
           r.step = 0;
-          if (!got) return;
-          gather(econ, r, G.meat, got.meat, PACK_JOB);
-          gather(econ, r, G.hide, got.hide, PACK_JOB);
           core.stats.animalsHunted++;
+          r.targetId = prey.id;
+          r.target = { x: Math.floor(prey.x), y: feetY(prey.y), z: Math.floor(prey.z) };
         });
         return true;
       }
-      const c: Cell = { x: Math.floor(prey.x), y: feetY(prey.y), z: Math.floor(prey.z) };
-      // A beast that keeps its distance, or stands where nobody can walk, is given best for a while.
-      if (gaveUp(r, c) || ++r.step > 8) {
+      // A beast that keeps its distance, or stands where nobody can walk, is given best for a while. (At the
+      // start of a stalk a failure left over from some other errand is not this one's.)
+      if (r.step === 0) r.badKey = -1;
+      if (r.badKey >= 0 || ++r.step > MAX_STALK) {
+        r.badKey = -1;
         r.step = 0;
-        r.restUntil = core.env.now + 120;
+        r.target = null;
+        r.restUntil = core.env.now + REST_AFTER_FAILURE;
         return false;
       }
+      // Close in a leg at a time, since it will have moved by the end of one: to bowshot if it is out of
+      // range, and most of the way when it is in range but behind a rise or a trunk.
+      const leg = Math.min(d > BOW_RANGE ? d - BOW_STAND : d * 0.6, STALK_LEG);
+      const tx = Math.floor(v.x + ((prey.x - v.x) / d) * leg);
+      const tz = Math.floor(v.z + ((prey.z - v.z) / d) * leg);
+      const ty = groundLevel(core.world, tx, tz);
+      const c: Cell = ty >= 0 ? { x: tx, y: ty, z: tz } : { x: Math.floor(prey.x), y: feetY(prey.y), z: Math.floor(prey.z) };
       r.activity = `Stalking a ${prey.kind}`;
+      // Held as the target so that no delivery calls the hunter away in the middle of a stalk.
+      r.target = c;
       if (!go(core, r, c, true, false)) return true;
+      // Arrived and still no shot: look again on the next thought.
+      act(core, r, 'idle', 1, TOOLS_ITEM);
+      return true;
     }
   }
   if (r.target && gaveUp(r, r.target)) r.target = null;

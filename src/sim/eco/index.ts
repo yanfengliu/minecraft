@@ -12,7 +12,7 @@
 import type { Area, EntityKind, EntityView, InspectInfo, SimContext, WildlifeApi } from '../api';
 import { tendMast, updateBand } from './bands';
 import { thinkBird } from './birds';
-import { needs, wait } from './brain';
+import { alarmGroup, needs, wait } from './brain';
 import { updateFlock } from './flock';
 import { thinkFox, updateDen } from './fox';
 import type { PlantCover } from './flora';
@@ -26,7 +26,7 @@ import {
   SONGBIRD, WILD_KINDS, WOLF, type WildKind, kindIndex,
 } from './species';
 import { Eco } from './state';
-import { type Animal, DIED_AGE, DIED_HUNGER, DIED_HUNTER, DIED_PREDATOR, type Group, ST_HIDE } from './types';
+import { type Animal, DIED_AGE, DIED_HUNGER, DIED_HUNTER, DIED_PREDATOR, type Group, ST_HIDE, WHY_PERSON } from './types';
 import { catchFish, fishAbundance, tendWaters, thinkFish, updateSchool } from './water';
 import { thinkWolf, updatePack } from './wolf';
 
@@ -58,7 +58,7 @@ export interface CensusRow {
   /** Totals since the simulation began. */
   births: number;
   deaths: number;
-  /** The same deaths, by cause. `hunted` includes fish landed. */
+  /** The same deaths, by cause. For fish, `hunted` is the drawn fish taken out as their water was fished down, not every fish landed. */
   oldAge: number;
   starved: number;
   killed: number;
@@ -97,6 +97,10 @@ const REFRESH_TICKS = 10;
 const SURVEY_TICKS = 16;
 /** Simulated seconds between two ticks beyond which the clock was set rather than stepped. A step is a tenth of one. */
 const CLOCK_SET = 5;
+/** Seconds the body of an animal shot from a distance lies where it fell, for the hunter to walk to it. */
+const SHOT_LIES = 240;
+/** Seconds a body the hunter has taken is still seen before it is gone. */
+const CARRIED_OFF = 4;
 
 export class EcoSim {
   /** Every wild animal to draw: the living, and the dead for the moments before they are cleared away. */
@@ -132,13 +136,29 @@ export class EcoSim {
         // Not a rabbit down its burrow: the hunter cannot reach what is underground.
         return mask === 0 ? null : e.hash.nearest(x, z, radius, mask, null, ST_HIDE);
       },
+      shoot: (id, fromX, fromZ) => {
+        const a = e.byId.get(id);
+        if (!a || !a.alive) return false;
+        const g = a.group;
+        kill(e, a, DIED_HUNTER, SHOT_LIES);
+        a.shot = true;
+        // The others have seen one of their number fall, and run from where the arrow came.
+        if (g.sp.groupType === GT_BAND || g.sp.groupType === GT_WARREN) alarmGroup(e, g, fromX, fromZ, WHY_PERSON);
+        return true;
+      },
       harvest: (id) => {
         const a = e.byId.get(id);
-        if (!a || !a.alive) return null;
-        // The young yield less; the hunter carries the body off, so it lies only a moment.
+        if (!a || (!a.alive && !a.shot)) return null;
+        // The young yield less; the hunter carries the body off, so it lies only a moment longer.
         const share = a.scale / a.size;
         const out = { meat: Math.round(a.sp.meat * share), hide: Math.round(a.sp.hide * share) };
-        kill(e, a, DIED_HUNTER, 4);
+        if (a.alive) {
+          kill(e, a, DIED_HUNTER, CARRIED_OFF);
+        } else {
+          a.shot = false;
+          a.removeAt = e.now + CARRIED_OFF;
+          a.nextThink = e.tick + CARRIED_OFF * 10;
+        }
         return out;
       },
       fishAbundance: (x, z) => fishAbundance(e, x, z),
