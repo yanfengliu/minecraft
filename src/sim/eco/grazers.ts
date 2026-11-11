@@ -23,6 +23,9 @@ const FEED_RANGE = 14;
 const COVER_RANGE = 7;
 /** Below this hunger an animal does not bother to eat. */
 const PECKISH = 0.12;
+/** Above this it is starving, and feeds whatever the hour and wherever it is, until its hunger is down to `FED_ENOUGH`. */
+const STARVING = 0.85;
+const FED_ENOUGH = 0.5;
 /**
  * Seconds between thoughts for an animal that is asleep, resting or in its
  * burrow, and for one that is walking somewhere. They can be long because
@@ -156,7 +159,7 @@ export function thinkGrazer(e: Eco, a: Animal): void {
   // The ground can change under an animal that is standing still: a block placed, or dug away.
   if (a.mode === MODE_STILL && !footingOk(e, a)) unstick(e, a);
 
-  if (g.mode === GM_FEED || a.hunger > 0.85) feed(e, a, g);
+  if (g.mode === GM_FEED || a.hunger > STARVING || a.astray) feed(e, a, g);
   else if (g.mode === GM_ALARM) {
     // The herd is alert but nothing has come near this one: stand and watch.
     if (a.mode === MODE_STILL) a.anim = 'idle';
@@ -187,7 +190,14 @@ function feed(e: Eco, a: Animal, g: Group): void {
   const dx = g.ax - a.x;
   const dz = g.az - a.z;
   const d2 = dx * dx + dz * dz;
-  if (d2 > (range + 4) * (range + 4)) {
+  const far = d2 > (range + 4) * (range + 4);
+  // A starving animal eats what is in front of it, and goes on eating there until it has had enough to travel
+  // on. One cut off from its herd by a river or a bank it cannot climb would otherwise walk up and down in
+  // sight of grass until it died.
+  if (!far || a.hunger < FED_ENOUGH) a.astray = false;
+  else if (a.hunger > STARVING) a.astray = true;
+  const alone = a.astray;
+  if (far && !alone) {
     // Too far from where the group is feeding: go there first.
     if (a.state !== ST_TRAVEL || a.mode !== MODE_WALK) {
       scatter(e, g.ax, g.az, range * 0.6);
@@ -200,7 +210,7 @@ function feed(e: Eco, a: Animal, g: Group): void {
     return;
   }
   if (a.hunger > PECKISH) {
-    const why = a.hunger > 0.85 ? WHY_STARVING : a.hunger > 0.5 ? WHY_HUNGRY : WHY_HABIT;
+    const why = a.hunger > STARVING ? WHY_STARVING : a.hunger > 0.5 ? WHY_HUNGRY : WHY_HABIT;
     if (a.state === ST_SEEK && a.hasFood) {
       if (a.mode === MODE_WALK) {
         wait(e, a, ON_THE_WAY);
@@ -232,9 +242,10 @@ function feed(e: Eco, a: Animal, g: Group): void {
       beginEating(e, a);
       return;
     }
-    // Nothing in reach: move on and look again.
+    // Nothing in reach: move on and look again, round where the group feeds or, cut off from it, round where it is.
     if (a.mode !== MODE_WALK || a.state !== ST_SEEK) {
-      scatter(e, g.ax, g.az, range);
+      if (alone) scatter(e, a.x, a.z, FEED_RANGE);
+      else scatter(e, g.ax, g.az, range);
       a.state = ST_SEEK;
       a.why = why;
       walkTo(e, a, e.spot.x, e.spot.z, sp.walk * 1.3, 1);

@@ -107,6 +107,49 @@ export class Eco {
     this.flora = new Flora(this, rng.fork('flora'));
   }
 
+  /**
+   * The clock was set, not stepped: carry every moment the simulation
+   * remembers along with it, `seconds` on the clock and `days` on the
+   * calendar, so that what was due in a minute is still due in a minute and
+   * what was a day old is still a day old. Without this a clock put forward a
+   * week starves every animal at its next thought, and one put back six hours
+   * leaves them waiting six hours for whatever they were about to do.
+   *
+   * Everything that holds a clock time or a day number is listed here: the
+   * fields of `Animal` and `Group` documented as clock times, their two day
+   * stamps, and the saplings' ages. Whatever is scheduled by tick (thinking,
+   * group updates, the hourly round of the plants) needs no carrying.
+   */
+  carry(seconds: number, days: number): void {
+    // Every animal on record: the living, the dead not yet cleared away, and the birds gone for the winter.
+    for (const a of this.byId.values()) {
+      a.born += seconds;
+      a.thought += seconds;
+      a.until += seconds;
+      a.alarmUntil += seconds;
+      a.nextBreed += seconds;
+      a.chaseUntil += seconds;
+      a.nextHunt += seconds;
+      a.nextRaid += seconds;
+      a.removeAt += seconds;
+      // Zero means she is not carrying, and must go on meaning it.
+      if (a.dueAt !== 0) a.dueAt = a.dueAt + seconds || Number.MIN_VALUE;
+    }
+    for (const g of this.groups) {
+      g.until += seconds;
+      g.feedUntil += seconds;
+      g.alarmUntil += seconds;
+      g.nextCourt += seconds;
+      g.nextSplit += seconds;
+      g.chaseUntil += seconds;
+      g.restUntil += seconds;
+      g.coverDay += days;
+      g.rangeDay += days;
+    }
+    this.flora.carry(days);
+    this.refresh();
+  }
+
   /** Re-read the clock, the sky, the weather and where the people are. */
   refresh(): void {
     const clock = this.clock;

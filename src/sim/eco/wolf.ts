@@ -38,10 +38,24 @@ const BIG_GAME = bit(DEER) | bit(BOAR);
 /** A pack member this near the kill when the eating is done has had its share. */
 const FEAST_REACH = 40;
 
-/** The first member old enough to hunt leads. */
-function leader(g: Group): Animal {
-  for (const m of g.members) if (!m.mother) return m;
-  return g.members[0] as Animal;
+/**
+ * Whoever is in front leads: the grown member nearest the point the pack is
+ * making for. Not always the same wolf, because one that has fallen behind,
+ * or cannot find its way down from the den, must not hold up the hunt: a pack
+ * led from the rear stood among the deer and starved.
+ */
+function leader(g: Group, x: number, z: number): Animal {
+  let best = g.members[0] as Animal;
+  let bestD = Infinity;
+  for (const m of g.members) {
+    if (m.mother) continue;
+    const d = (m.x - x) * (m.x - x) + (m.z - z) * (m.z - z);
+    if (d < bestD) {
+      bestD = d;
+      best = m;
+    }
+  }
+  return best;
 }
 
 function wake(e: Eco, g: Group): void {
@@ -72,7 +86,6 @@ export function updatePack(e: Eco, g: Group): void {
   g.mx = mx / n;
   g.mz = mz / n;
   g.hunger = hunters > 0 ? hunger / hunters : 0;
-  const lead = leader(g);
 
   if (g.mode === GM_FEAST) {
     if (now < g.until) return;
@@ -88,7 +101,8 @@ export function updatePack(e: Eco, g: Group): void {
   }
   if (g.mode === GM_CHASE) {
     const t = g.target;
-    const far = t ? (t.x - lead.x) * (t.x - lead.x) + (t.z - lead.z) * (t.z - lead.z) > 2500 : false;
+    const front = t ? leader(g, t.x, t.z) : null;
+    const far = t && front ? (t.x - front.x) * (t.x - front.x) + (t.z - front.z) * (t.z - front.z) > 2500 : false;
     const lost = t ? !t.alive || far : !g.raid || g.raid.anim === 'dead';
     if (!lost && now <= g.chaseUntil && !spent) return;
     // It got away, or they ran themselves out. Rest before trying again.
@@ -111,6 +125,7 @@ export function updatePack(e: Eco, g: Group): void {
       g.rangeDay = e.day;
       g.finds = trails(e);
     }
+    const lead = leader(g, g.ax, g.az);
     const q = pickQuarry(e, lead, g.finds);
     if (q) {
       g.target = q;

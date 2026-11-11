@@ -121,6 +121,8 @@ export class Animal implements EntityView {
   size = 1;
   /** Constitution: how long it lasts once starving, relative to the average. */
   grit = 1;
+  /** Starving and out of reach of where its group feeds: it is fending for itself until it has eaten. */
+  astray = false;
   alive = true;
   /** Index in the simulation's animal list, or -1 when not in it (dead and removed, or away for the winter). */
   slot = -1;

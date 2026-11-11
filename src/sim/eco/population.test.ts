@@ -115,7 +115,9 @@ describe('hunters and the hunted', () => {
     const rig = makeRig({ ...only({ fox: 4, wolf: 4 }, true), startDay: 0 });
     let fewestFoxes = 99;
     let fewestWolves = 99;
-    rig.days(14, (tick) => {
+    // Long enough for the slowest to starve (the third week, as the test above found) and three more days to
+    // pass with the country all but empty of them.
+    rig.days(26, (tick) => {
       if (tick % 600 !== 0) return;
       fewestFoxes = Math.min(fewestFoxes, rig.count('fox'));
       fewestWolves = Math.min(fewestWolves, rig.count('wolf'));

@@ -95,6 +95,8 @@ const HISTORY_DAYS = 112;
 const REFRESH_TICKS = 10;
 /** Ticks between re-surveys of one cell of the habitat map. */
 const SURVEY_TICKS = 16;
+/** Simulated seconds between two ticks beyond which the clock was set rather than stepped. A step is a tenth of one. */
+const CLOCK_SET = 5;
 
 export class EcoSim {
   /** Every wild animal to draw: the living, and the dead for the moments before they are cleared away. */
@@ -148,6 +150,8 @@ export class EcoSim {
   tick(): void {
     const e = this.e;
     e.tick++;
+    const gap = e.clock.time - e.now;
+    if (gap < 0 || gap > CLOCK_SET) this.resync(gap);
     e.now = e.clock.time;
     if (e.tick % REFRESH_TICKS === 1) e.refresh();
     e.flora.tick();
@@ -171,6 +175,24 @@ export class EcoSim {
     if (hour !== this.lastHour) {
       this.lastHour = hour;
       this.hourly();
+    }
+  }
+
+  /**
+   * The clock has moved by more than a step, or backwards: someone set it
+   * (the almanac's "next day" and "next season", or the hour put back). The
+   * time between was not lived through, so nothing is aged, starved, born or
+   * cleared away on account of it: every remembered time moves with the
+   * clock. The chart gets one point for the day arrived at, not one for each
+   * day skipped, and the hourly round is not run for the hours in between.
+   */
+  private resync(gap: number): void {
+    const e = this.e;
+    e.carry(gap, e.clock.day - e.day);
+    this.lastHour = Math.floor(e.clock.time / 60);
+    if (e.clock.day !== this.lastDay) {
+      this.lastDay = e.clock.day;
+      this.sample();
     }
   }
 

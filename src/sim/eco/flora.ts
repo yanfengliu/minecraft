@@ -121,6 +121,11 @@ export class Flora {
     if (this.e.tick % 600 === 0) this.growSaplings();
   }
 
+  /** The calendar was set forward or back by `days`: the saplings are no older or younger for it. */
+  carry(days: number): void {
+    for (const [key, since] of this.saplings) this.saplings.set(key, since + days);
+  }
+
   cover(): PlantCover {
     const t = this.last;
     const scale = (this.world.sx * this.world.sz) / Math.max(1, t.visits);
