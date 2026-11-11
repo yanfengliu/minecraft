@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Rng } from '../core/rng';
 import { B, WATER_LEVEL, WATER_SOURCE, waterState } from '../world/blocks';
 import { World, createFlatWorld } from '../world/world';
 import { Fluid, RIVER_SPEED, type FluidOptions } from './fluid';
@@ -297,5 +298,69 @@ describe('fluid', () => {
       return parts.join(',');
     };
     expect(sig()).toBe(sig());
+  });
+
+  it('settles any walled-in mess of rubble and water, conserving every unit (soak)', () => {
+    let ticksTotal = 0;
+    for (let seed = 1; seed <= 12; seed++) {
+      const rng = new Rng(seed);
+      const world = createFlatWorld(64, 64, GROUND);
+      const { fluid } = setup(world, { seed });
+      // A walled yard with random rubble, pits and ledges in it.
+      basin(world, 16, 16, 39, 39, 8);
+      for (let i = 0; i < 160; i++) {
+        const x = 16 + rng.int(24);
+        const z = 16 + rng.int(24);
+        const h = rng.int(5);
+        for (let y = GROUND + 1; y <= GROUND + h; y++) world.setRaw(x, y, z, B.stone);
+        if (rng.chance(0.15)) world.setRaw(x, GROUND, z, B.air);
+        if (rng.chance(0.1)) world.setRaw(x, GROUND + h + 2, z, B.oak_planks);
+      }
+      // Water thrown in at random heights, in lumps and in sheets.
+      let poured = 0;
+      const pour = (x: number, y: number, z: number, level: number): void => {
+        if (world.get(x, y, z) !== B.air) return;
+        world.set(x, y, z, waterState(level));
+        poured += level;
+      };
+      for (let i = 0; i < 40; i++) {
+        const x = 17 + rng.int(22);
+        const z = 17 + rng.int(22);
+        const y = GROUND + 6 + rng.int(4);
+        const size = 1 + rng.int(3);
+        for (let dz = 0; dz < size; dz++) for (let dx = 0; dx < size; dx++) pour(x + dx, y, z + dz, 1 + rng.int(16));
+      }
+      let worst = 0;
+      const ticks = settle(fluid, 6000, () => {
+        // Checked now and then; the full scan is the slow part of this test.
+        if (fluid.ticks % 40 === 0) worst = Math.max(worst, Math.abs(totalUnits(world) - (poured - fluid.evaporated)));
+      });
+      ticksTotal += ticks;
+      expect(fluid.activeCount).toBe(0);
+      expect(worst).toBe(0);
+      expect(totalUnits(world)).toBe(poured - fluid.evaporated);
+      expect(fluid.created + fluid.absorbed + fluid.lost).toBe(0);
+      // At rest: no water hangs over a cell it could fall into, and no cell stands two units above an open neighbour.
+      let hanging = 0;
+      let steps = 0;
+      for (let y = GROUND; y <= GROUND + 10; y++) {
+        for (let z = 16; z <= 39; z++) {
+          for (let x = 16; x <= 39; x++) {
+            const level = WATER_LEVEL[world.get(x, y, z)] as number;
+            if (level === 0) continue;
+            const under = world.get(x, y - 1, z);
+            if (under === B.air || ((WATER_LEVEL[under] as number) > 0 && (WATER_LEVEL[under] as number) < 16)) hanging++;
+            for (const [dx, dz] of [[1, 0], [0, 1], [-1, 0], [0, -1]] as const) {
+              const n = world.get(x + dx, y, z + dz);
+              const open = n === B.air || (WATER_LEVEL[n] as number) > 0;
+              if (open && level - (WATER_LEVEL[n] as number) >= 2) steps++;
+            }
+          }
+        }
+      }
+      expect(hanging).toBe(0);
+      expect(steps).toBe(0);
+    }
+    console.log(`fluid soak: 12 random yards settled in ${ticksTotal} ticks in all, every unit accounted for`);
   });
 });

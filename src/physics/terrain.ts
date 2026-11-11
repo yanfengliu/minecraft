@@ -2,12 +2,18 @@
 // the physics library whole, so collision exists only in 8-cubed chunks near
 // bodies and is kept in step with block edits.
 //
-// Full blocks, slabs and stairs go into one sparse voxel collider with
-// half-block voxels (Rapier's `Voxels` shape). It knows which voxel faces are
-// interior, so a body sliding across flat ground never meets a seam, and a
-// block edit is an O(1) `setVoxel`. Everything else with collision (paths a
-// sixteenth short of a full block, fences, furniture) cannot be expressed in
-// half-blocks and gets exact cuboid colliders, merged where they line up.
+// Full blocks, slabs and stairs go into voxel colliders with half-block
+// voxels (Rapier's `Voxels` shape), one collider per chunk. A voxel shape
+// knows which of its faces are interior, and neighbouring chunk colliders are
+// told about each other, so a body sliding across flat ground never meets a
+// seam, inside a chunk or between two. A block edit is an O(1) `setVoxel`.
+// One collider per chunk rather than one for the world because editing a
+// collider wakes every body that touches it: this way a block dug here does
+// not wake rubble lying across the island.
+//
+// Everything else with collision (paths a sixteenth short of a full block,
+// fences, furniture) cannot be expressed in half-blocks and gets exact cuboid
+// colliders, merged where they line up.
 
 import RAPIER, { type Collider, type World as RapierWorld } from '@dimforge/rapier3d-compat';
 import { COLLISION, MATERIAL, MATERIALS, SHAPE, SHAPE_CONNECT, type Material } from '../world/blocks';
@@ -20,6 +26,9 @@ const KIND = SHAPE;
 
 export const CHUNK = 8;
 const CHUNK_CELLS = CHUNK * CHUNK * CHUNK;
+/** Voxels along a chunk side: two per block. */
+const SIDE = CHUNK * 2;
+const VOXEL = { x: 0.5, y: 0.5, z: 0.5 };
 /** Friction and bounce of the ground as a whole; a body's own material is averaged with these. */
 const GROUND_FRICTION = 0.7;
 const GROUND_RESTITUTION = 0.05;
@@ -29,11 +38,15 @@ const NY = [0, 0, 1, -1, 0, 0];
 const NZ = [0, 0, 0, 0, 1, -1];
 
 interface Chunk {
-  x0: number;
-  y0: number;
-  z0: number;
+  cx: number;
+  cy: number;
+  cz: number;
   /** Octants currently set in the voxel collider, per cell. */
   masks: Uint8Array;
+  /** The chunk's voxel collider, made when its first voxel is set. Voxel coordinates are global, so it sits at the origin. */
+  voxels: Collider | null;
+  /** Voxels set in it. */
+  filled: number;
   /** Cuboid colliders of this chunk's irregular cells. */
   boxes: Collider[];
   stale: boolean;
@@ -42,7 +55,6 @@ interface Chunk {
 }
 
 export class TerrainColliders {
-  private readonly voxels: Collider;
   private readonly chunks = new Map<number, Chunk>();
   private readonly ncx: number;
   private readonly ncy: number;
@@ -55,11 +67,6 @@ export class TerrainColliders {
     this.ncx = Math.ceil(world.sx / CHUNK);
     this.ncy = Math.ceil(world.sy / CHUNK);
     this.ncz = Math.ceil(world.sz / CHUNK);
-    // The shape needs one voxel to exist; park it far below anything a body can reach.
-    const desc = RAPIER.ColliderDesc.voxels(new Int32Array([0, -8192, 0]), { x: 0.5, y: 0.5, z: 0.5 })
-      .setFriction(GROUND_FRICTION)
-      .setRestitution(GROUND_RESTITUTION);
-    this.voxels = rapier.createCollider(desc);
   }
 
   /** Chunks that currently have collision geometry. */
@@ -78,8 +85,7 @@ export class TerrainColliders {
     for (let cy = cy0; cy <= cy1; cy++) {
       for (let cz = cz0; cz <= cz1; cz++) {
         for (let cx = cx0; cx <= cx1; cx++) {
-          const key = (cy * this.ncz + cz) * this.ncx + cx;
-          const chunk = this.chunks.get(key) ?? this.activate(key, cx, cy, cz);
+          const chunk = this.chunks.get((cy * this.ncz + cz) * this.ncx + cx) ?? this.activate(cx, cy, cz);
           chunk.used = this.sweepNo;
         }
       }
@@ -129,10 +135,7 @@ export class TerrainColliders {
   sweep(): void {
     for (const [key, chunk] of this.chunks) {
       if (chunk.used >= this.sweepNo - 1) continue;
-      for (let i = 0; i < CHUNK_CELLS; i++) {
-        const m = chunk.masks[i] as number;
-        if (m !== 0) this.setOctants(chunk.x0 + (i & 7), chunk.y0 + (i >> 6), chunk.z0 + ((i >> 3) & 7), m, 0);
-      }
+      if (chunk.voxels) this.rapier.removeCollider(chunk.voxels, false);
       for (const c of chunk.boxes) this.rapier.removeCollider(c, false);
       this.chunks.delete(key);
     }
@@ -147,6 +150,14 @@ export class TerrainColliders {
     return this.chunks.get(((y >> 3) * this.ncz + (z >> 3)) * this.ncx + (x >> 3));
   }
 
+  private neighbour(c: Chunk, dx: number, dy: number, dz: number): Chunk | undefined {
+    const cx = c.cx + dx;
+    const cy = c.cy + dy;
+    const cz = c.cz + dz;
+    if (cx < 0 || cy < 0 || cz < 0 || cx >= this.ncx || cy >= this.ncy || cz >= this.ncz) return undefined;
+    return this.chunks.get((cy * this.ncz + cz) * this.ncx + cx);
+  }
+
   private markStale(x: number, y: number, z: number): boolean {
     const chunk = this.chunkAt(x, y, z);
     if (!chunk) return false;
@@ -154,15 +165,15 @@ export class TerrainColliders {
     return true;
   }
 
-  private activate(key: number, cx: number, cy: number, cz: number): Chunk {
-    const chunk: Chunk = { x0: cx * CHUNK, y0: cy * CHUNK, z0: cz * CHUNK, masks: new Uint8Array(CHUNK_CELLS), boxes: [], stale: false, used: this.sweepNo };
-    this.chunks.set(key, chunk);
+  private activate(cx: number, cy: number, cz: number): Chunk {
+    const chunk: Chunk = { cx, cy, cz, masks: new Uint8Array(CHUNK_CELLS), voxels: null, filled: 0, boxes: [], stale: false, used: this.sweepNo };
+    this.chunks.set((cy * this.ncz + cz) * this.ncx + cx, chunk);
     const w = this.world;
     let odd = false;
     for (let i = 0; i < CHUNK_CELLS; i++) {
-      const x = chunk.x0 + (i & 7);
-      const y = chunk.y0 + (i >> 6);
-      const z = chunk.z0 + ((i >> 3) & 7);
+      const x = cx * CHUNK + (i & 7);
+      const y = cy * CHUNK + (i >> 6);
+      const z = cz * CHUNK + ((i >> 3) & 7);
       if (x >= w.sx || y >= w.sy || z >= w.sz) continue;
       const s = w.get(x, y, z);
       if (ODD[s]) odd = true;
@@ -170,11 +181,27 @@ export class TerrainColliders {
       const m = this.wanted(x, y, z, s);
       if (m !== 0) {
         chunk.masks[i] = m;
-        this.setOctants(x, y, z, 0, m);
+        // Filling a fresh chunk: its neighbours are told once, below, rather than voxel by voxel.
+        this.setOctants(chunk, x, y, z, 0, m, false);
       }
     }
+    this.join(chunk);
     if (odd) this.rebuildBoxes(chunk);
     return chunk;
+  }
+
+  /**
+   * Tell a chunk's voxel collider and each neighbour's about one another, so
+   * the faces where they meet count as interior. Only the six chunks that
+   * share a face matter: a voxel's exposed features follow from its face
+   * neighbours alone (measured: joining all 26 changes nothing).
+   */
+  private join(chunk: Chunk): void {
+    if (!chunk.voxels) return;
+    for (let n = 0; n < 6; n++) {
+      const other = this.neighbour(chunk, NX[n] as number, NY[n] as number, NZ[n] as number)?.voxels;
+      if (other) chunk.voxels.combineVoxelStates(other, 0, 0, 0);
+    }
   }
 
   /**
@@ -200,15 +227,53 @@ export class TerrainColliders {
     const want = this.wanted(x, y, z, this.world.get(x, y, z));
     if (have === want) return;
     chunk.masks[i] = want;
-    this.setOctants(x, y, z, have, want);
+    this.setOctants(chunk, x, y, z, have, want, true);
   }
 
-  private setOctants(x: number, y: number, z: number, have: number, want: number): void {
+  /** Change which octants of a cell are set. With `tell`, neighbouring chunks hear of changes on the chunk's faces. */
+  private setOctants(chunk: Chunk, x: number, y: number, z: number, have: number, want: number, tell: boolean): void {
     const diff = have ^ want;
     for (let k = 0; k < 8; k++) {
       if ((diff & (1 << k)) === 0) continue;
-      this.voxels.setVoxel(2 * x + (k & 1), 2 * y + ((k >> 1) & 1), 2 * z + ((k >> 2) & 1), (want & (1 << k)) !== 0);
+      const ix = 2 * x + (k & 1);
+      const iy = 2 * y + ((k >> 1) & 1);
+      const iz = 2 * z + ((k >> 2) & 1);
+      const on = (want & (1 << k)) !== 0;
+      chunk.filled += on ? 1 : -1;
+      if (!chunk.voxels) {
+        // The shape cannot exist empty, so the collider is born with its first voxel.
+        chunk.voxels = this.rapier.createCollider(
+          RAPIER.ColliderDesc.voxels(new Int32Array([ix, iy, iz]), VOXEL).setFriction(GROUND_FRICTION).setRestitution(GROUND_RESTITUTION),
+        );
+        if (tell) this.join(chunk);
+        continue;
+      }
+      chunk.voxels.setVoxel(ix, iy, iz, on);
+      if (tell) this.tell(chunk, ix, iy, iz);
     }
+    if (chunk.filled === 0 && chunk.voxels) {
+      this.rapier.removeCollider(chunk.voxels, false);
+      chunk.voxels = null;
+    }
+  }
+
+  /** A voxel on a face of the chunk changed: let the chunk across each such face update its side of the seam. */
+  private tell(chunk: Chunk, ix: number, iy: number, iz: number): void {
+    const lx = ix - chunk.cx * SIDE;
+    const ly = iy - chunk.cy * SIDE;
+    const lz = iz - chunk.cz * SIDE;
+    const ax = lx === 0 ? -1 : lx === SIDE - 1 ? 1 : 0;
+    const ay = ly === 0 ? -1 : ly === SIDE - 1 ? 1 : 0;
+    const az = lz === 0 ? -1 : lz === SIDE - 1 ? 1 : 0;
+    // The call is made on the collider whose voxel changed, naming the one to bring up to date.
+    const voxels = chunk.voxels as Collider;
+    const across = (dx: number, dy: number, dz: number): void => {
+      const other = this.neighbour(chunk, dx, dy, dz)?.voxels;
+      if (other) voxels.propagateVoxelChange(other, ix, iy, iz, 0, 0, 0);
+    };
+    if (ax !== 0) across(ax, 0, 0);
+    if (ay !== 0) across(0, ay, 0);
+    if (az !== 0) across(0, 0, az);
   }
 
   private rebuildBoxes(chunk: Chunk): void {
@@ -219,9 +284,9 @@ export class TerrainColliders {
     const scratch = this.scratch;
     const all: number[] = [];
     for (let i = 0; i < CHUNK_CELLS; i++) {
-      const x = chunk.x0 + (i & 7);
-      const y = chunk.y0 + (i >> 6);
-      const z = chunk.z0 + ((i >> 3) & 7);
+      const x = chunk.cx * CHUNK + (i & 7);
+      const y = chunk.cy * CHUNK + (i >> 6);
+      const z = chunk.cz * CHUNK + ((i >> 3) & 7);
       const s = w.get(x, y, z);
       if (!ODD[s] || !w.inBounds(x, y, z)) continue;
       scratch.length = 0;

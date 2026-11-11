@@ -1,17 +1,17 @@
-// Rigid bodies: loose blocks, compounds of blocks and dropped items, simulated
+// Rigid bodies: tumbling blocks, compounds of blocks and dropped items, simulated
 // by Rapier against the voxel world (see terrain.ts) and each other. This file
 // owns the Rapier world and the life of each body; water, coming to rest,
 // breaking apart and items live beside it.
 
 import RAPIER, { type World as RapierWorld } from '@dimforge/rapier3d-compat';
-import { MATERIALS, type Material } from '../world/blocks';
+import { MATERIALS, SOLID, type Material } from '../world/blocks';
 import type { World } from '../world/world';
 import { buoyancySamples, cellBounds, dominantMaterial, type Body } from './body';
 import type { Fluid } from './fluid';
 import { breakOnImpact } from './fracture';
 import { ITEM_HALF, despawnOldItems, itemMaterial, mergeItems } from './items';
 import { enforceBudget, trySettle } from './settle';
-import { SOLID_VOLUME, mergeCells } from './shapes';
+import { SOLID_VOLUME, VOXEL_MASK, mergeCells } from './shapes';
 import type { DetachedCell } from './structure';
 import { CHUNK, TerrainColliders } from './terrain';
 import { GRAVITY, RIGID_DT, type BodyCell, type BodyKind, type BodyView, type EmitEvent, type PhysicsOptions } from './types';
@@ -36,6 +36,13 @@ const WORLD_MARGIN = 8;
 /** The most the player's body can push with, in newtons: enough to shove a crate, not a boulder. */
 const PUSH_FORCE = 900;
 const SETTLES_PER_STEP = 4;
+/** No body moves faster than this, m/s: two thirds of a block per step. */
+const MAX_SPEED = 40;
+/** Steps a moving body's centre may be inside a full block before it is lifted out. */
+const BURIED_STEPS = 12;
+
+const FILLED = VOXEL_MASK;
+const HARD = SOLID;
 
 const IDENTITY = { x: 0, y: 0, z: 0, w: 1 };
 const ZERO = { x: 0, y: 0, z: 0 };
@@ -54,7 +61,6 @@ export class RigidBodies {
   readonly settleTime: number;
   readonly snapDistance: number;
   readonly snapAngle: number;
-  readonly seed: number;
 
   private born = 0;
   private steps = 0;
@@ -65,6 +71,7 @@ export class RigidBodies {
   private readonly q = { x: 0, y: 0, z: 0, w: 1 };
   private readonly v = { x: 0, y: 0, z: 0 };
   private readonly j = { x: 0, y: 0, z: 0 };
+  private readonly c = { x: 0, y: 0, z: 0 };
 
   /** Load the physics library. Must have resolved before the first instance is made. */
   static async init(): Promise<void> {
@@ -92,7 +99,6 @@ export class RigidBodies {
     this.settleTime = opts.settleTime ?? 3;
     this.snapDistance = opts.snapDistance ?? 0.4;
     this.snapAngle = opts.snapAngle ?? 0.3;
-    this.seed = opts.seed ?? 0;
   }
 
   dispose(): void {
@@ -135,7 +141,7 @@ export class RigidBodies {
       view, rb, kind, cells, material: 0, mass: 1, volume: 1,
       min: [0, 0, 0], max: [0, 0, 0], radius: 1, com: [0, 0, 0], samples: new Float32Array(0),
       wet: 0, inWater: false, dry: 1, angDamp: 0, vx: vel.x, vy: vel.y, vz: vel.z,
-      quiet: 1, asleep: 0, snapRefused: false, age: 0, born: this.born++, tree: opts.tree === true,
+      quiet: 1, asleep: 0, snapRefused: false, buried: 0, age: 0, born: this.born++, tree: opts.tree === true,
       range: new Int32Array(6).fill(-1), dead: false,
     };
     this.fit(body);
@@ -265,10 +271,12 @@ export class RigidBodies {
   substep(): void {
     const dt = RIGID_DT;
     this.steps++;
+    // Bodies removed between steps (picked up, say) are still listed: drop them before anything touches their handles.
+    this.compact();
     this.terrain.flush(this.wakeNear);
     this.push(dt);
     for (const b of this.bodies) {
-      if (b.view.sleeping) continue;
+      if (b.dead || b.view.sleeping) continue;
       this.needTerrain(b);
       applyWater(this.water, b, dt);
     }
@@ -299,12 +307,15 @@ export class RigidBodies {
       }
       this.terrain.sweep();
     }
-    if (this.anyDead) {
-      let n = 0;
-      for (const b of this.bodies) if (!b.dead) this.bodies[n++] = b;
-      this.bodies.length = n;
-      this.anyDead = false;
-    }
+    this.compact();
+  }
+
+  private compact(): void {
+    if (!this.anyDead) return;
+    let n = 0;
+    for (const b of this.bodies) if (!b.dead) this.bodies[n++] = b;
+    this.bodies.length = n;
+    this.anyDead = false;
   }
 
   // -------------------------------------------------------------------------
@@ -312,9 +323,19 @@ export class RigidBodies {
   /** Wake whatever rests on or against a cell whose collision changed. */
   private readonly wakeNear = (x: number, y: number, z: number): void => {
     // By our own records rather than a query of the physics world: the bodies are few, and a query callback must not touch them.
+    const filled = FILLED[this.world.get(x, y, z)] === 0xff;
     for (const b of this.bodies) {
-      if (b.dead || !b.view.sleeping) continue;
+      if (b.dead) continue;
       const v = b.view;
+      // A block built right over a body would entomb it: the contact solver has no way out of the middle of a block.
+      if (filled) {
+        const c = this.centre(b);
+        if (Math.floor(c.x) === x && Math.floor(c.y) === y && Math.floor(c.z) === z) {
+          this.unbury(b);
+          continue;
+        }
+      }
+      if (!v.sleeping) continue;
       const reach = b.radius + 1;
       if (Math.abs(v.x - x - 0.5) < reach && Math.abs(v.y - y - 0.5) < reach && Math.abs(v.z - z - 0.5) < reach) b.rb.wakeUp();
     }
@@ -322,17 +343,36 @@ export class RigidBodies {
 
   /** Make sure the terrain around a body has collision, asking only when the body has moved to new chunks. */
   private needTerrain(b: Body): void {
-    const v = b.view;
-    const reach = b.radius + TERRAIN_MARGIN;
-    const ax = Math.abs(b.vx) * TERRAIN_LOOKAHEAD;
-    const ay = Math.abs(b.vy) * TERRAIN_LOOKAHEAD;
-    const az = Math.abs(b.vz) * TERRAIN_LOOKAHEAD;
-    const x0 = v.x - reach - ax;
-    const y0 = v.y - reach - ay;
-    const z0 = v.z - reach - az;
-    const x1 = v.x + reach + ax;
-    const y1 = v.y + reach + ay;
-    const z1 = v.z + reach + az;
+    const { x, y, z, qx, qy, qz, qw } = b.view;
+    // The body's box as it lies now: |R| times its half extents, about its rotated centre. A tall tree
+    // standing needs a column of ground, not the sphere it could sweep.
+    const r00 = 1 - 2 * (qy * qy + qz * qz);
+    const r01 = 2 * (qx * qy - qz * qw);
+    const r02 = 2 * (qx * qz + qy * qw);
+    const r10 = 2 * (qx * qy + qz * qw);
+    const r11 = 1 - 2 * (qx * qx + qz * qz);
+    const r12 = 2 * (qy * qz - qx * qw);
+    const r20 = 2 * (qx * qz - qy * qw);
+    const r21 = 2 * (qy * qz + qx * qw);
+    const r22 = 1 - 2 * (qx * qx + qy * qy);
+    const lx = (b.min[0] + b.max[0]) / 2;
+    const ly = (b.min[1] + b.max[1]) / 2;
+    const lz = (b.min[2] + b.max[2]) / 2;
+    const hx = (b.max[0] - b.min[0]) / 2;
+    const hy = (b.max[1] - b.min[1]) / 2;
+    const hz = (b.max[2] - b.min[2]) / 2;
+    const cx = x + r00 * lx + r01 * ly + r02 * lz;
+    const cy = y + r10 * lx + r11 * ly + r12 * lz;
+    const cz = z + r20 * lx + r21 * ly + r22 * lz;
+    const ex = Math.abs(r00) * hx + Math.abs(r01) * hy + Math.abs(r02) * hz + TERRAIN_MARGIN + Math.abs(b.vx) * TERRAIN_LOOKAHEAD;
+    const ey = Math.abs(r10) * hx + Math.abs(r11) * hy + Math.abs(r12) * hz + TERRAIN_MARGIN + Math.abs(b.vy) * TERRAIN_LOOKAHEAD;
+    const ez = Math.abs(r20) * hx + Math.abs(r21) * hy + Math.abs(r22) * hz + TERRAIN_MARGIN + Math.abs(b.vz) * TERRAIN_LOOKAHEAD;
+    const x0 = cx - ex;
+    const y0 = cy - ey;
+    const z0 = cz - ez;
+    const x1 = cx + ex;
+    const y1 = cy + ey;
+    const z1 = cz + ez;
     const r = b.range;
     const c0 = Math.floor(x0 / CHUNK);
     const c1 = Math.floor(y0 / CHUNK);
@@ -397,6 +437,30 @@ export class RigidBodies {
       this.remove(b);
       return false;
     }
+    // Its centre of mass inside a full block: something was built where it lies, or it got into the hollow under the ground's shell.
+    // (Only on the island: beyond its edge there is no ground, and a body that sinks there is simply lost.)
+    const c = this.centre(b);
+    const cx = Math.floor(c.x);
+    const cy = Math.floor(c.y);
+    const cz = Math.floor(c.z);
+    if (w.inBounds(cx, cy, cz) && FILLED[w.get(cx, cy, cz)] === 0xff) {
+      if (++b.buried > BURIED_STEPS) {
+        this.unbury(b);
+        return !b.dead;
+      }
+    } else b.buried = 0;
+    const speed2 = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (speed2 > MAX_SPEED * MAX_SPEED) {
+      // Keep a step's travel well inside the thickness of the ground's collision shell.
+      const k = MAX_SPEED / Math.sqrt(speed2);
+      v.x *= k;
+      v.y *= k;
+      v.z *= k;
+      rb.setLinvel(v, false);
+      b.vx = v.x;
+      b.vy = v.y;
+      b.vz = v.z;
+    }
     const hit = dx * dx + dy * dy + dz * dz;
     if (hit > IMPACT_SPEED * IMPACT_SPEED && b.quiet > 0.1) {
       b.quiet = 0;
@@ -407,6 +471,45 @@ export class RigidBodies {
       breakOnImpact(this, b, speed);
     }
     return !b.dead;
+  }
+
+  /** World position of a body's centre of mass at the pose in its view. The result is scratch: use it before the next call. */
+  private centre(b: Body): { x: number; y: number; z: number } {
+    const { x, y, z, qx, qy, qz, qw } = b.view;
+    const lx = b.com[0];
+    const ly = b.com[1];
+    const lz = b.com[2];
+    const c = this.c;
+    c.x = x + (1 - 2 * (qy * qy + qz * qz)) * lx + 2 * (qx * qy - qz * qw) * ly + 2 * (qx * qz + qy * qw) * lz;
+    c.y = y + 2 * (qx * qy + qz * qw) * lx + (1 - 2 * (qx * qx + qz * qz)) * ly + 2 * (qy * qz - qx * qw) * lz;
+    c.z = z + 2 * (qx * qz - qy * qw) * lx + 2 * (qy * qz + qx * qw) * ly + (1 - 2 * (qx * qx + qy * qy)) * lz;
+    return c;
+  }
+
+  /** Lift a body out of the solid it is stuck in, so its centre of mass is in the first open cell above; if there is none, give it up. */
+  private unbury(b: Body): void {
+    const w = this.world;
+    const v = b.view;
+    const c = this.centre(b);
+    const x = Math.floor(c.x);
+    const z = Math.floor(c.z);
+    const from = Math.floor(c.y) + 1;
+    for (let y = from; y < from + 32; y++) {
+      if (HARD[w.get(x, y, z)]) continue;
+      this.t.x = v.x;
+      this.t.y = v.y + (y + 0.5 - c.y);
+      this.t.z = v.z;
+      b.rb.setTranslation(this.t, true);
+      b.rb.setLinvel(ZERO, true);
+      v.y = this.t.y;
+      b.vx = 0;
+      b.vy = 0;
+      b.vz = 0;
+      b.buried = 0;
+      this.needTerrain(b);
+      return;
+    }
+    this.remove(b);
   }
 
   /** The player's body shoves aside what it overlaps, with limited force. */

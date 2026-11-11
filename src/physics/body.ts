@@ -43,6 +43,8 @@ export interface Body {
   asleep: number;
   /** Set once a return to the grid has been tried and refused in this sleep. */
   snapRefused: boolean;
+  /** Consecutive steps its centre has been inside a full block. */
+  buried: number;
   /** Seconds since creation. */
   age: number;
   /** Creation order, for oldest-first budgets. */

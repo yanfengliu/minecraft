@@ -30,7 +30,7 @@ describe('collision shapes', () => {
       expect(IRREGULAR[s]).toBe(1);
       expect(VOXEL_MASK[s]).toBe(0);
     }
-    expect(IRREGULAR[B.stone] | IRREGULAR[B.oak_slab] | IRREGULAR[B.torch]).toBe(0);
+    for (const s of [B.stone, B.oak_slab, B.torch]) expect(IRREGULAR[s]).toBe(0);
   });
 
   it('merges a body into few boxes and keeps materials apart', () => {

@@ -106,6 +106,31 @@ describe('physics', () => {
     physics.dispose();
   });
 
+  it('lifts a body out of a block built over it, and drops terrain collision nobody needs', async () => {
+    const { world, physics } = await setup({ settleTime: 1e9 });
+    const id = physics.spawnBlock(B.oak_planks, 20.4, TOP + 0.6, 20.6);
+    const v = physics.bodies.find((b) => b.id === id) as BodyView;
+    run(physics, 2);
+    expect(v.sleeping).toBe(true);
+    expect(physics.stats.terrainChunks).toBeGreaterThan(0);
+    world.set(20, TOP, 20, B.stone);
+    run(physics, 3);
+    // Not entombed and not fallen through: it sits on top of the new block.
+    expect(world.get(20, TOP, 20)).toBe(B.stone);
+    expect(v.y).toBeGreaterThan(TOP + 1.4);
+    expect(v.y).toBeLessThan(TOP + 1.6);
+    // Take the body away; within a few seconds the ground it needed is forgotten.
+    const got = physics.spawnItem(item('bread').id, 1, 40.5, TOP + 0.5, 40.5);
+    expect(physics.collectItems(40.5, TOP + 0.5, 40.5, 1)).toEqual([{ item: item('bread').id, count: 1 }]);
+    expect(physics.bodies.some((b) => b.id === got)).toBe(false);
+    internals(physics).remove(internals(physics).bodies[0] as Parameters<RigidBodies['remove']>[0]);
+    run(physics, 4);
+    expect(physics.bodies).toHaveLength(0);
+    expect(physics.stats.terrainChunks).toBe(0);
+    expect(physics.stats.colliders).toBe(0);
+    physics.dispose();
+  });
+
   it('brings a felled tree down as one body, sheds its leaves, and loses no logs', async () => {
     const { world, physics, events } = await setup();
     growTree(world, 30, TOP, 30, 'birch', new Rng(3), true);
@@ -217,8 +242,9 @@ describe('physics', () => {
     expect(s.bodies).toBe(2);
     expect(s.awakeBodies).toBe(2);
     expect(s.terrainChunks).toBeGreaterThan(0);
-    // The terrain's voxel collider, and one collider per body.
-    expect(s.colliders).toBe(3);
+    // One collider per body, and one voxel collider for each chunk of ground under them (chunks of open air have none).
+    expect(s.colliders).toBeGreaterThanOrEqual(2 + 2);
+    expect(s.colliders).toBeLessThanOrEqual(2 + s.terrainChunks);
     expect(s.rigidMs).toBeGreaterThan(0);
     expect(s.stepMs).toBeGreaterThanOrEqual(s.rigidMs + s.looseMs + s.structureMs + s.fluidMs);
     // Without a clock the timings stay zero and nothing reads the time.

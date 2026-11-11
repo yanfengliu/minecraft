@@ -58,7 +58,11 @@ export interface BodyView {
 export type PhysicsEvent =
   /** Something entered water. `strength` is roughly the entry speed in m/s scaled by the size of what fell in. */
   | { type: 'splash'; x: number; y: number; z: number; strength: number }
-  /** A body hit something hard. `energy` is the kinetic energy lost in joules; `material` indexes `MATERIALS`. */
+  /**
+   * A body hit something hard. `energy` is half its mass times the square of
+   * the speed the blow changed, in joules: about the kinetic energy it arrived
+   * with, a little more for a rebound. `material` indexes `MATERIALS`.
+   */
   | { type: 'impact'; x: number; y: number; z: number; energy: number; material: number }
   /** A structure lost its support and left the grid. `blocks` counts the cells that came away. */
   | { type: 'collapse'; x: number; y: number; z: number; blocks: number }
