@@ -16,7 +16,7 @@ layout(std140) uniform Frame {
   vec4 uAmbientSky;    // rgb irradiance / pi arriving from the sky dome
   vec4 uAmbientGround; // rgb light bounced up from the ground
   vec4 uFog;           // rgb tint of local fog, a density per metre at sea level
-  vec4 uWind;          // xy wind velocity along x and z in m/s, z strength 0..1, w gust travel
+  vec4 uWind;          // xy wind velocity along x and z in m/s, z strength 0..1, w how far the gusts have travelled (wraps)
   vec4 uWeather;       // x wetness, y snow cover, z precipitation, w cloud cover
   vec4 uScreen;        // xy render size in pixels, zw its reciprocal
   vec4 uClip;          // x near, y far, z sea surface height, w exposure
@@ -25,6 +25,7 @@ layout(std140) uniform Frame {
   vec4 uBirchTint;     // rgb multiplier for birch leaves
   vec4 uWorld;         // xy world size in blocks along x and z, z night factor 0..1, w lightning flash
   vec4 uMisc;          // x camera underwater (0 or 1), y frame index, z sim time of day in hours, w storminess
+  vec4 uDrift;         // xy how far the wind has carried the clouds along x and z in metres (wraps), z a clock for rain and snow that wraps every 1248 s
 };
 `;
 

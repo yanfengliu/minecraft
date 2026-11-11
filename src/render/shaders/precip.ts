@@ -20,7 +20,7 @@ void main() {
   float id = float(gl_InstanceID);
   vec2 cell = vec2(hash12(vec2(id, 1.7)), hash12(vec2(id, 9.3)));
   float period = 0.35 + 0.25 * hash12(vec2(id, 4.1));
-  float t = uCameraPos.w / period + cell.x * 7.0;
+  float t = uDrift.z / period + cell.x * 7.0;
   float age = fract(t);
   // Each life lands somewhere new.
   vec2 jump = vec2(hash12(vec2(id, floor(t))), hash12(vec2(floor(t), id + 3.0)));
@@ -38,12 +38,26 @@ void main() {
   vec3 h = vec3(hash12(vec2(id, 0.37)), hash12(vec2(id, 5.11)), hash12(vec2(id, 8.73)));
   vec3 box = vec3(34.0, 26.0, 34.0);
   bool snow = uSnow > 0.5;
-  vec3 vel = snow ? vec3(uWind.x * 0.55, -1.25 - 0.5 * h.x, uWind.y * 0.55) : vec3(uWind.x * 0.4, -9.0 - 3.0 * h.x, uWind.y * 0.4);
-  vec3 p = h * box + vel * uCameraPos.w;
-  if (snow) p.xz += vec2(sin(uCameraPos.w * 0.9 + id), cos(uCameraPos.w * 0.7 + id * 1.3)) * 0.45;
-  // Wrap the box around the eye so the weather is everywhere the player looks.
   vec3 eye = uCameraPos.xyz;
-  p = mod(p - eye + box * 0.5, box) - box * 0.5 + eye;
+  // Fall speeds come in five steps, 9 to 12 m/s for rain and 1.25 to 1.75 for snow, chosen so that when
+  // the clock wraps (every 1248 s) each drop has fallen a multiple of six box heights and nothing jumps.
+  float speed = (snow ? 0.125 * 10.0 : 0.75 * 12.0) + (snow ? 0.125 : 0.75) * floor(h.x * 5.0);
+  // Height in the world, falling for ever; then the copy of it that is in the box around the eye.
+  float fall = h.y * box.y - speed * uDrift.z;
+  float copy = floor((eye.y + box.y * 0.5 - fall) / box.y);
+  float y = fall + copy * box.y;
+  // Each copy falls somewhere new, so no drop is seen to come down the same line twice running: six places in turn.
+  float turn = mod(copy, 6.0);
+  vec2 start = vec2(hash12(vec2(id, turn * 1.37 + 0.5)), hash12(vec2(turn * 0.73 + 3.1, id))) * box.xz;
+  // The wind slants the fall: a drop is further downwind the lower it has come. Tied to height in the
+  // world, not to time, so a change of wind leans the rain over instead of throwing it sideways.
+  vec3 vel = vec3(uWind.x * (snow ? 0.55 : 0.4), -speed, uWind.y * (snow ? 0.55 : 0.4));
+  vec3 p = vec3(start.x, y, start.y);
+  p.xz -= vel.xz * (y / speed);
+  // These two rates turn a whole number of times (179 and 139) in the clock's 1248 s.
+  if (snow) p.xz += vec2(sin(uDrift.z * 0.901184 + id), cos(uDrift.z * 0.699802 + id * 1.3)) * 0.45;
+  // Wrap the box around the eye sideways so the weather is everywhere the player looks.
+  p.xz = mod(p.xz - eye.xz + box.xz * 0.5, box.xz) - box.xz * 0.5 + eye.xz;
   float roof = texture(uHeightTex, p.xz / uWorld.xy).r * 255.0;
   bool alive = p.y > roof && id < uCount;
 

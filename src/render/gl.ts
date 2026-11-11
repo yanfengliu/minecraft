@@ -29,7 +29,11 @@ function compile(gl: GL, type: number, source: string, name: string): WebGLShade
   return shader;
 }
 
-const HEADER = '#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2DArray;\nprecision highp sampler2DArrayShadow;\nprecision highp sampler3D;\nprecision highp usampler2D;\n';
+// Every sampler type the shaders use is named here. A sampler's precision does not follow `precision
+// highp float`: left alone, `sampler2D` is lowp in a fragment shader, which on hardware that honours
+// it (phones) would cut the depth buffer and the HDR targets down to eight bits or so.
+const HEADER = '#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp sampler2DArray;\n'
+  + 'precision highp sampler2DArrayShadow;\nprecision highp sampler3D;\nprecision highp usampler2D;\n';
 
 export class Program {
   readonly gl: GL;

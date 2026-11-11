@@ -61,6 +61,7 @@ export class LightEngine {
   private readonly world: World;
   private readonly addQ = new Queue();
   private readonly remQ = new Queue();
+  private readonly swept: number[] = [];
   private readonly sxz: number;
 
   constructor(world: World) {
@@ -153,6 +154,8 @@ export class LightEngine {
         const from = t + 1;
         const to = Math.min(sy - 1, Math.max(reach, t >= 0 && LIGHT_OPACITY[w.get(x, t, z)] !== 15 ? from : t));
         for (let y = from; y <= to; y++) this.addQ.push(this.pack(x, y, z));
+        // A translucent block in the very top layer has no lit cell above it to leak from: the sky itself is above.
+        if (t === sy - 1) this.seedCeiling(x, z);
       }
     }
     this.flood(SKY);
@@ -202,10 +205,7 @@ export class LightEngine {
       }
       if (channel === SKY) {
         // The top layer has no cell above to pour sky into it.
-        if (y === w.sy - 1 && LIGHT_OPACITY[state] === 0) {
-          this.put(SKY, x, y, z, 15);
-          this.addQ.push(this.pack(x, y, z));
-        }
+        if (y === w.sy - 1) this.seedCeiling(x, z);
       } else {
         const e = EMIT[state] as number;
         if (e > 0) {
@@ -217,12 +217,29 @@ export class LightEngine {
     }
   }
 
+  /**
+   * Give the cell in the top layer of a column the sky light it would get from an open cell above
+   * it, were there one: all of it if the cell is clear, what its opacity lets through otherwise.
+   */
+  private seedCeiling(x: number, z: number): void {
+    const y = this.world.sy - 1;
+    const op = LIGHT_OPACITY[this.world.get(x, y, z)] as number;
+    if (op >= 15) return;
+    const light = op === 0 ? 15 : 15 - op;
+    if (light <= this.get(SKY, x, y, z)) return;
+    this.put(SKY, x, y, z, light);
+    this.addQ.push(this.pack(x, y, z));
+  }
+
   /** Remove light that depended on this cell, queueing surviving neighbours to re-spread. */
   private darken(channel: number, x0: number, y0: number, z0: number, startLight: number): void {
     const w = this.world;
     const sx = w.sx;
     const sxz = this.sxz;
     const rem = this.remQ;
+    // Emitters swept up in the darkening: each had its own light, which has to be given back.
+    const emitters = this.swept;
+    emitters.length = 0;
     this.put(channel, x0, y0, z0, 0);
     rem.push(this.pack(x0, y0, z0));
     rem.push(startLight);
@@ -245,10 +262,20 @@ export class LightEngine {
           this.put(channel, nx, ny, nz, 0);
           rem.push(this.pack(nx, ny, nz));
           rem.push(nl);
+          // A weaker lamp standing in a stronger one's light is dimmer than it and is cleared with it,
+          // though what it gives is its own.
+          if (channel === BLOCK && (EMIT[w.get(nx, ny, nz)] as number) > 0) emitters.push(nx, ny, nz);
         } else {
           this.addQ.push(this.pack(nx, ny, nz));
         }
       }
+    }
+    for (let i = 0; i < emitters.length; i += 3) {
+      const ex = emitters[i] as number;
+      const ey = emitters[i + 1] as number;
+      const ez = emitters[i + 2] as number;
+      this.put(BLOCK, ex, ey, ez, EMIT[w.get(ex, ey, ez)] as number);
+      this.addQ.push(this.pack(ex, ey, ez));
     }
   }
 

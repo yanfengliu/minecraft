@@ -7,7 +7,7 @@ import type { GL } from './gl';
 const MATS = ['view', 'proj', 'viewProj', 'invViewProj', 'invProj'] as const;
 const VECS = [
   'cameraPos', 'lightDir', 'lightColor', 'sunDir', 'moonDir', 'ambientSky', 'ambientGround', 'fog', 'wind', 'weather',
-  'screen', 'clip', 'grassTint', 'foliageTint', 'birchTint', 'world', 'misc',
+  'screen', 'clip', 'grassTint', 'foliageTint', 'birchTint', 'world', 'misc', 'drift',
 ] as const;
 
 export type FrameMat = (typeof MATS)[number];

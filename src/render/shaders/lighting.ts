@@ -130,7 +130,7 @@ vec3 starField(vec3 dir) {
   float h = hash13(id);
   if (h < 0.972) return vec3(0.0);
   vec3 f = fract(p) - 0.5 - (vec3(hash13(id + 3.1), hash13(id + 7.7), hash13(id + 11.3)) - 0.5) * 0.6;
-  float core = smoothstep(0.16, 0.0, length(f));
+  float core = 1.0 - smoothstep(0.0, 0.16, length(f));
   float twinkle = 0.75 + 0.25 * sin(uCameraPos.w * (2.0 + 6.0 * hash13(id + 5.0)) + h * 80.0);
   vec3 tint = mix(vec3(0.75, 0.85, 1.0), vec3(1.0, 0.9, 0.75), hash13(id + 9.0));
   return tint * core * twinkle * (0.6 + 2.6 * pow((h - 0.972) / 0.028, 3.0));
@@ -262,7 +262,7 @@ void main() {
   // Wet ground and standing water mirror the sky.
   if (wet > 0.01) {
     float ndv = max(dot(N, V), 0.0);
-    float F = 0.03 + 0.97 * pow(1.0 - ndv, 5.0);
+    float F = 0.03 + 0.97 * pow(saturate(1.0 - ndv), 5.0);
     vec3 R = reflect(-V, N);
     color += skyColor(normalize(vec3(R.x, abs(R.y) + 0.02, R.z))) * F * skyVis * (puddle * 0.9 + wet * 0.12) * (1.0 - rough);
   }
@@ -289,8 +289,6 @@ void main() {
   vec3 through;
   vec3 c = scatterFrom(rd, uSunDir.xyz, through) * uSunIntensity;
   if (uMoonIntensity > 0.0) c += scatterFrom(rd, uMoonDir.xyz, through) * uMoonIntensity;
-  // Dusk and dawn: the glow single scattering cannot give (see twilight() in atmosphere.ts).
-  c += twilightSky(rd, uSunDir.xyz);
   // Starlight and airglow: the sky is never fully black.
   c += vec3(0.0008, 0.0011, 0.002) * (0.4 + 0.6 * saturate(rd.y + 0.2)) * uGrassTint.a;
   // Overcast flattens the sky toward the grey underside of the cloud deck.

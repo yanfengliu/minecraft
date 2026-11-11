@@ -188,4 +188,70 @@ describe('light', () => {
     expect(mismatches).toBe(0);
     expect(SOLID[B.stone]).toBe(1);
   });
+
+  /** Cells whose light differs from what a full recompute of the same blocks gives. */
+  const disagreements = (w: World): number => {
+    const fresh = w.clone();
+    new LightEngine(fresh).computeAll();
+    let n = 0;
+    for (let y = 0; y < w.sy; y++) for (let z = 0; z < w.sz; z++) for (let x = 0; x < w.sx; x++) if (w.getLight(x, y, z) !== fresh.getLight(x, y, z)) n++;
+    return n;
+  };
+
+  it('keeps a weaker lamp alight when a stronger one beside it is taken away', () => {
+    const w = createFlatWorld(32, 32, 15, 32);
+    const light = new LightEngine(w);
+    light.computeAll();
+    light.attach();
+    w.set(10, 16, 10, B.campfire + 1);
+    w.set(11, 16, 10, B.torch);
+    expect(w.blockLight(10, 16, 10)).toBe(15);
+    expect(w.blockLight(11, 16, 10)).toBe(14);
+    w.set(10, 16, 10, B.air);
+    // The torch stood in the fire's light and was dimmer than it; its own light must survive the fire.
+    expect(w.blockLight(11, 16, 10)).toBe(14);
+    expect(w.blockLight(10, 16, 10)).toBe(13);
+    expect(w.blockLight(14, 16, 10)).toBe(11);
+    expect(disagreements(w)).toBe(0);
+  });
+
+  it('repairs light among crowded lamps of different strengths as a full recompute would', () => {
+    // Edits packed into a small room, so lamps stand in each other's light and are placed and taken
+    // away over and over: the case a sparse scatter of edits never meets.
+    const rng = new Rng(77);
+    const w = createFlatWorld(32, 32, 15, 32);
+    const light = new LightEngine(w);
+    light.computeAll();
+    light.attach();
+    const palette = [B.air, B.air, B.air, B.torch, B.lantern + 1, B.campfire + 1, B.stone, B.oak_leaves, B.window];
+    for (let round = 0; round < 12; round++) {
+      for (let i = 0; i < 120; i++) w.set(10 + rng.int(9), 16 + rng.int(5), 10 + rng.int(9), rng.pick(palette));
+      expect(disagreements(w), `after round ${round}`).toBe(0);
+    }
+  });
+
+  it('lets the sky into translucent blocks in the very top layer of the world', () => {
+    const lit = (canopyY: number, sy: number): [number, number] => {
+      const w = createFlatWorld(32, 32, 10, sy);
+      for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) w.setRaw(x, canopyY, z, B.oak_leaves);
+      w.recomputeHeightmap();
+      new LightEngine(w).computeAll();
+      return [w.skyLight(16, canopyY, 16), w.skyLight(16, canopyY - 1, 16)];
+    };
+    // A canopy one layer below the ceiling and one in the ceiling itself are lit alike.
+    expect(lit(30, 32)).toEqual([14, 13]);
+    expect(lit(31, 32)).toEqual([14, 13]);
+
+    // And edits up there repair as a full recompute would.
+    const rng = new Rng(5);
+    const w = createFlatWorld(32, 32, 10, 32);
+    const light = new LightEngine(w);
+    light.computeAll();
+    light.attach();
+    const palette = [B.air, B.air, B.oak_leaves, B.water_source, B.window, B.stone, B.torch];
+    for (let round = 0; round < 8; round++) {
+      for (let i = 0; i < 100; i++) w.set(8 + rng.int(12), 27 + rng.int(5), 8 + rng.int(12), rng.pick(palette));
+      expect(disagreements(w), `after round ${round}`).toBe(0);
+    }
+  });
 });

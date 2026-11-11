@@ -65,12 +65,15 @@ float cloudDensity(vec3 p, bool fine) {
   float h = (p.y - CLOUD_BASE) / (CLOUD_TOP - CLOUD_BASE);
   if (h <= 0.0 || h >= 1.0) return 0.0;
   float cover = uWeather.w;
-  // Clouds drift with the wind; the upper layers a little faster.
-  vec3 q = p + vec3(uWind.x, 0.0, uWind.y) * uCameraPos.w * (2.2 + h);
+  // Clouds are where all the wind so far has carried them (uDrift), and their tops lean downwind by
+  // about a minute of the wind there is now. Never wind times elapsed time: that moves the whole sky
+  // again whenever the wind changes, and further the longer the game has run.
+  vec3 q = p + vec3(uDrift.x, 0.0, uDrift.y) + vec3(uWind.x, 0.0, uWind.y) * (60.0 * h);
   vec2 n = texture(uCloudNoise, q * vec3(1.0 / 2300.0, 1.0 / 900.0, 1.0 / 2300.0)).rg;
   // Fair-weather heaps have flat bases and round tops; overcast fills the whole slab.
-  float heap = smoothstep(0.0, 0.1, h) * smoothstep(1.0, 0.35, h);
-  float sheet = smoothstep(0.0, 0.08, h) * smoothstep(1.0, 0.8, h);
+  // (smoothstep with its edges the wrong way round is undefined in GLSL, so falling ramps are written 1 - rising.)
+  float heap = smoothstep(0.0, 0.1, h) * (1.0 - smoothstep(0.35, 1.0, h));
+  float sheet = smoothstep(0.0, 0.08, h) * (1.0 - smoothstep(0.8, 1.0, h));
   float profile = mix(heap, sheet, smoothstep(0.55, 0.95, cover));
   float amount = mix(0.3, 0.98, pow(cover, 0.75));
   float d = n.r * profile - (1.0 - amount);

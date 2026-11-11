@@ -5,6 +5,7 @@
 import type { MeshOutput } from '../mesh/mesher';
 import { tileIndex } from '../world/tiles';
 import type { World } from '../world/world';
+import { Drift } from './drift';
 import { EntityRenderer } from './entities/renderer';
 import type { Environment } from './environment';
 import { FrameUniforms } from './frame';
@@ -150,6 +151,7 @@ export class Renderer {
   selection: { box: number[]; progress: number } | null = null;
 
   private readonly targets: FrameTargets;
+  private readonly drift = new Drift();
 
   private readonly view: Mat4 = mat4();
   private readonly proj: Mat4 = mat4();
@@ -309,8 +311,10 @@ export class Renderer {
     u.vec('ambientSky', env.ambientSky[0], env.ambientSky[1], env.ambientSky[2]);
     u.vec('ambientGround', env.ambientGround[0], env.ambientGround[1], env.ambientGround[2]);
     u.vec('fog', 1, 1, 1, env.fogDensity);
-    const windLen = Math.hypot(info.wind.x, info.wind.z);
-    u.vec('wind', info.wind.x, info.wind.z, info.wind.strength, info.time * (1.2 + 0.25 * windLen));
+    const drift = this.drift;
+    drift.advance(info.time, info.wind.x, info.wind.z);
+    u.vec('wind', info.wind.x, info.wind.z, info.wind.strength, drift.gust);
+    u.vec('drift', drift.cloudX, drift.cloudZ, drift.clock);
     u.vec('weather', info.weather.wetness, info.weather.snow, info.weather.rain, info.weather.cloud);
     u.vec('screen', w, h, 1 / w, 1 / h);
     u.vec('clip', NEAR, FAR, this.world.seaLevel - 1 + 15 / 16, env.exposure);
@@ -469,8 +473,11 @@ export class Renderer {
     gl.disable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // Water first, writing depth, so that of two sheets of water one behind the other only the nearer
+    // is seen. Glass afterwards without writing depth: within a section its faces come in mesh order,
+    // not by distance, and a pane that wrote depth would hide the window behind it from one side.
     for (const prog of [this.pOcean, this.pWater]) {
-      prog.use();
+      prog.use().f('uGlassPass', 0);
       prog.tex('uScene', 0, gl.TEXTURE_2D, hdrCopy.colors[0] as WebGLTexture);
       prog.tex('uDepth', 1, gl.TEXTURE_2D, gbuffer.depth);
       prog.tex('uTiles', 2, gl.TEXTURE_2D_ARRAY, this.tiles);
@@ -484,11 +491,14 @@ export class Renderer {
         gl.drawArrays(gl.TRIANGLES, 0, OCEAN_VERTICES);
         stats.drawCalls++;
       } else {
-        // Farthest first, so nearer glass and water blend over what lies behind them.
+        // Farthest first, so nearer water blends over what lies behind it.
         const drawn = this.sections.draw(this.visible, 2, prog.loc('uOrigin'), true);
         stats.triangles += drawn * 2;
       }
     }
+    gl.depthMask(false);
+    this.pWater.use().f('uGlassPass', 1);
+    this.sections.draw(this.visible, 2, this.pWater.loc('uOrigin'), true);
     // The block under the crosshair.
     if (this.selection) {
       const b = this.selection.box;

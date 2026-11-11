@@ -49,7 +49,7 @@ void main() {
     vec3 v = worldFromDepth(uv, texture(uDepth, uv).r) - P;
     float l2 = dot(v, v);
     // Count only geometry within the radius, so distant silhouettes do not darken what they merely overlap.
-    occ += max(dot(N, v) - 0.04, 0.0) / (l2 + 0.015) * smoothstep(RADIUS * RADIUS * 1.6, RADIUS * RADIUS * 0.5, l2);
+    occ += max(dot(N, v) - 0.04, 0.0) / (l2 + 0.015) * (1.0 - smoothstep(RADIUS * RADIUS * 0.5, RADIUS * RADIUS * 1.6, l2));
   }
   float ao = saturate(1.0 - occ * (RADIUS * 1.5 / float(S)));
   oColor = vec4(ao * ao, viewZ, 0.0, 1.0);

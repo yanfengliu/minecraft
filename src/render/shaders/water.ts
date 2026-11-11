@@ -66,6 +66,7 @@ ${CAUSTICS}
 uniform sampler2D uScene;
 uniform sampler2D uDepth;
 uniform sampler2DArray uTiles;
+uniform float uGlassPass;   // 0 while water is being drawn, 1 while glass is
 
 in vec3 vWorld;
 in vec2 vUV;
@@ -141,7 +142,11 @@ void main() {
   uint ni = vBits & 7u;
   vec3 N = NORMALS[min(ni, 5u)];
 
-  if ((vBits & 128u) == 0u) {
+  // Water and glass share a mesh but are drawn in two goes (see the renderer): each takes only its own.
+  bool glass = (vBits & 128u) == 0u;
+  if (glass != (uGlassPass > 0.5)) discard;
+
+  if (glass) {
     // Glass: the lead and frame are solid, the panes a faint tint that catches the light.
     vec4 a = tileSample(uTiles, vUV, vLayer);
     if (!gl_FrontFacing) N = -N;
@@ -184,7 +189,9 @@ void main() {
       vec2 centre = cell + 0.25 + 0.5 * hash22(cell + floor(t * 1.7 + hash12(cell) * 9.0));
       vec2 d = c - centre;
       float r = length(d);
-      float ring = sin((r - life * 0.42) * 46.0) * exp(-pow((r - life * 0.42) * 9.0, 2.0)) * (1.0 - life);
+      // Squared by multiplying: pow of a negative base is undefined, and inside the ring this is negative.
+      float off = (r - life * 0.42) * 9.0;
+      float ring = sin((r - life * 0.42) * 46.0) * exp(-off * off) * (1.0 - life);
       g += normalize(d + 1e-4) * ring * 0.55 * rain * step(hash12(cell + 3.7), rain * 1.4);
     }
     N = normalize(vec3(-g.x, 1.0, -g.y));
