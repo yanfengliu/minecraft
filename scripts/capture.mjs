@@ -3,9 +3,12 @@
 //   node scripts/capture.mjs <spec.json>
 //
 // The spec is { url?, width?, height?, out?, shots: [{ name, eval?, step?, settle?, clip? }] }.
-// Each shot runs `eval` in the page (the debug interface is `window.__tidewick`,
-// and `at(x, z)` gives the standing height there), advances the game by `step`
-// seconds, waits for meshing to settle, and saves output/captures/<name>.png.
+// Each shot runs `eval` in the page, advances the game by `step` seconds, waits
+// for meshing to settle, and saves output/captures/<name>.png. In `eval`, `t` is
+// the debug interface (`window.__tidewick`) and `g` the game; `at(x, z)` gives
+// the standing height there, `clear(ax, ay, az, bx, by, bz)` says whether one
+// point can see another, and `watch(creature, distance, lift)` points the camera
+// at a creature from a side with a clear view.
 // It drives a headless Chromium on the GPU, like the browser gate, so what it
 // saves is what a player sees at that resolution.
 
@@ -57,6 +60,29 @@ await page.evaluate(async () => {
       return y + 1;
     }
     return 1;
+  };
+  // True if nothing solid (or leafy) lies on the straight line between two points.
+  window.clear = (ax, ay, az, bx, by, bz) => {
+    const n = Math.ceil(Math.hypot(bx - ax, by - ay, bz - az) * 3);
+    for (let i = 1; i < n; i++) {
+      const k = i / n;
+      const s = world.get(Math.floor(ax + (bx - ax) * k), Math.floor(ay + (by - ay) * k), Math.floor(az + (bz - az) * k));
+      if (s !== 0 && B && (B.SOLID[s] || B.IS_LEAVES[s])) return false;
+    }
+    return true;
+  };
+  // Point the camera at a creature (or any { x, y, z }) from the first of twelve sides with a clear view of it.
+  window.watch = (v, dist = 7, lift = 2.5) => {
+    for (let k = 0; k < 12; k++) {
+      const a = (k * Math.PI) / 6;
+      const cx = v.x + Math.sin(a) * dist;
+      const cz = v.z + Math.cos(a) * dist;
+      const cy = Math.max(window.at(cx, cz), v.y) + lift;
+      if (!window.clear(cx, cy, cz, v.x, v.y + 0.6, v.z)) continue;
+      window.__tidewick.look(cx, cy, cz, (Math.atan2(v.x - cx, v.z - cz) * 180) / Math.PI, (Math.atan2(v.y + 0.6 - cy, dist) * 180) / Math.PI);
+      return true;
+    }
+    return false;
   };
 });
 

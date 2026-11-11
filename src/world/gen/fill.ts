@@ -64,7 +64,10 @@ export function fillWorld(t: Terrain): World {
         top = rocky > 0.38 ? B.stone : B.grass;
         soil = 2;
       } else if (b === BIOME_FOREST || b === BIOME_PINE) {
-        top = rand2(x, z, seed + 5) < (b === BIOME_PINE ? 0.7 : 0.45) + rocky * 0.5 ? B.forest_floor : B.grass;
+        // Leaf litter lies in drifts with grassy glades between them, and a little scatter roughens the
+        // edges. Chosen block by block at random it made a checkerboard of the forest floor.
+        const litter = fbm2(detail, x / 11 - 31, z / 11 + 57, 2) + (rand2(x, z, seed + 5) - 0.5) * 0.35 + rocky * 0.3;
+        top = litter > (b === BIOME_PINE ? -0.28 : -0.02) ? B.forest_floor : B.grass;
       }
 
       // The world's floor is the bedrock `World.get` reports below y = 0, so no bedrock layer is stored.
