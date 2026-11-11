@@ -103,6 +103,12 @@ uniform sampler2D uHeightTex;
 in vec2 vUV;
 out vec4 oColor;
 
+// How open to the sky a point is: 1 above the highest thing in its column, 0 under cover.
+float openTo(vec2 xz, float y) {
+  float roof = texture(uHeightTex, xz / uWorld.xy).r * 255.0;
+  return smoothstep(roof - 1.3, roof - 0.25, y);
+}
+
 float distributionGGX(float ndh, float a) {
   float a2 = a * a;
   float d = ndh * ndh * (a2 - 1.0) + 1.0;
@@ -188,8 +194,14 @@ void main() {
 
   // --- weather on surfaces ---
   // Open to the sky if nothing in this column stands above the point: the same map that stops the rain.
-  float roof = texture(uHeightTex, world.xz / uWorld.xy).r * 255.0;
-  float open = smoothstep(roof - 1.3, roof - 0.25, world.y);
+  // Wind carries rain and snow a block in under an eave, so the ground there takes most of what falls
+  // beside it; without that every roof draws a hard dry rectangle round its house.
+  float open = openTo(world.xz, world.y);
+  float beside = max(max(openTo(world.xz + vec2(1.0, 0.0), world.y), openTo(world.xz - vec2(1.0, 0.0), world.y)),
+                     max(openTo(world.xz + vec2(0.0, 1.0), world.y), openTo(world.xz - vec2(0.0, 1.0), world.y)));
+  open = max(open, beside * 0.8);
+  // Snow settles on the land, not on whoever walks across it or on what they carry.
+  open *= 1.0 - step(0.5, g1.a);
   float wet = uWeather.x * open;
   float flatness = smoothstep(0.86, 0.98, N.y);
   // Water gathers in the low patches of level ground once it has rained for a while.

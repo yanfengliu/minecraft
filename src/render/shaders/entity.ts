@@ -83,7 +83,8 @@ void main() {
     albedo = vColor.rgb * (0.9 + 0.2 * grain);
   }
   oAlbedo = vec4(albedo, vColor.a);
-  oNormal = vec4(encodeNormal(normalize(vNormal)), 0.82, 0.0);
+  // Alpha 1 marks a creature or a loose body: the lighting pass keeps settled snow and puddles off it.
+  oNormal = vec4(encodeNormal(normalize(vNormal)), 0.82, 1.0);
   oLight = vec4(vLight, 1.0, 0.0);
 }
 `;
