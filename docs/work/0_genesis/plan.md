@@ -37,12 +37,12 @@ Dependencies and architecture calls the owner delegated are recorded in [the spe
 
 - [x] M0 — Toolchain, gates, registries, world storage, light, walkability, clock, sky, weather, contracts, spec. Session.
 - [x] M1 — Island generation, meshing, the deferred renderer, sky, water, the player and block editing. Session.
-- [ ] Village simulation and pathfinding, headless with soak tests. Delegated worker, branch from M0.
-- [ ] Wildlife simulation, headless with soak tests. Delegated worker, branch from M0.
-- [ ] Physics: fluid, loose blocks, structure, rigid bodies, headless with tests. Delegated worker, branch from M0.
-- [ ] M2 — Clouds, weather effects, seasons, volumetrics, post-processing. Session.
-- [ ] M3 — Village generation, integration of the three simulations, entity and body rendering, interface. Session.
-- [ ] M4 — Inspection through the real controls, tuning, performance, independent review, fixes.
+- [x] Village simulation and pathfinding, headless with soak tests. Delegated worker, branch from M0; merged at 98f4e4c.
+- [x] Wildlife simulation, headless with soak tests. Delegated worker, branch from M0; merged at 56a04f2. A follow-up on stability across seeds was assigned to the same worker.
+- [x] Physics: fluid, loose blocks, structure, rigid bodies, headless with tests. Delegated worker, branch from M0; merged before 26bdbe3.
+- [x] M2 — Clouds, weather effects, seasons, mist and light shafts, post-processing. Session.
+- [x] M3 — Village generation, integration of the three simulations, entity and body rendering, interface. Session.
+- [ ] M4 — Inspection through captures, tuning, performance, independent review, fixes.
 
 ## Outcome
 

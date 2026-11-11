@@ -2,7 +2,7 @@
 
 ## What this is
 
-Tidewick is an original first-person voxel sandbox that runs in the browser: a bounded island with a simulated medieval village (residents with daily routines, an economy of some twenty goods), a wildlife ecosystem, a day, moon and four-season cycle with weather, and physics (finite flowing water, loose blocks, rigid bodies, structural collapse). Stack: strict TypeScript, a custom WebGL2 deferred renderer with no scene-graph library, Vite, Vitest and Playwright; Rapier is the one planned runtime dependency.
+Tidewick is an original first-person voxel sandbox that runs in the browser: a bounded island with a simulated medieval village (residents with daily routines, an economy of some twenty goods), a wildlife ecosystem, a day, moon and four-season cycle with weather, and physics (finite flowing water, loose blocks, rigid bodies, structural collapse). Stack: strict TypeScript, a custom WebGL2 deferred renderer with no scene-graph library, Vite, Vitest and Playwright; Rapier is the one runtime dependency.
 
 The repository is named for the genre. The game is original: never add Minecraft's names, textures, characters, sounds or levels.
 
@@ -66,13 +66,16 @@ Toolchain: Node 24, pinned in `.nvmrc`. `npm run verify` runs every gate below i
 - `npm run docs:check` — Markdown links resolve, the fleet doc shape holds, every queued lesson names its gate, no file breaks the size limits.
 - `npm run test:browser` — builds, serves the production build and drives it in Chromium on the GPU. It fails on a software renderer unless `ALLOW_SOFTWARE_GL=1` says the host has none.
 
-Visual work is not done until the rendered frame has been looked at. `npm run dev` serves the game on port 5317; `window.__tidewick` is the debug interface (teleport, set the time and weather, read metrics) that the browser gate and inspection both use. Captures go in `output/`.
+Visual work is not done until the rendered frame has been looked at. `npm run dev` serves the game on port 5317; `window.__tidewick` is the debug interface (teleport, set the time and weather, read metrics) that the browser gate and inspection both use. `node scripts/capture.mjs <spec.json>` saves full-resolution frames from a headless browser on the GPU to `output/captures/`; use it rather than a desktop browser pane, whose screenshots crop when the pane is hidden.
+
+A browser test that steps the game by hand owns its clock: `boot()` in the smoke spec stops the game's own loop first. One that edits the world and then reads pixels must yield until the mesh pool is empty, because the workers' answers do not arrive inside one synchronous `page.evaluate`. Timing budgets in unit tests are judged on the best of several runs: the suite runs many files at once and other sessions share the machine.
 
 ## Invariants & boundaries
 
-- Layering, lowest first: `src/core`, `src/world`, `src/sim`, `src/physics`, `src/mesh`, then `src/render`, `src/player`, `src/ui`, then `src/game.ts`. A layer imports only from layers before it. The first five are headless: no DOM and no renderer imports, because they run in workers and in Node tests.
+- Layering, lowest first: `src/core`, `src/world`, `src/sim`, `src/physics`, `src/mesh`, then `src/render`, `src/player`, `src/ui`, then `src/life.ts` and `src/game.ts`. A layer imports only from layers before it. The first five are headless: no DOM and no renderer imports, because they run in workers and in Node tests.
 - Simulation is deterministic: a forked `Rng`, fixed steps of `SIM_DT`, and no `Math.random()`, `Date.now()` or `performance.now()` in `src/world`, `src/sim` or `src/physics`.
-- Contracts between world, simulations and renderer live in `src/sim/api.ts`. A `VillagePlan` from world generation or any test fixture must pass `validateVillagePlan`.
+- Contracts between world, simulations and renderer live in `src/sim/api.ts`. A `VillagePlan` from world generation or any test fixture must pass `validateVillagePlan`. Coin in the village is conserved exactly: between villagers every balance changes through `Economy.pay`, and the only coin that enters or leaves is the player's, through `VillageSim.buy` and `sell`.
+- No screen-space pass reads the G-buffer normal as the surface normal: it carries each tile's painted relief. Rebuild the face normal from depth, as the ambient occlusion pass does.
 - Block state ids are positional in the `B` table of `src/world/blocks.ts`, and tile order in `src/world/tiles.ts` is the GPU texture-array layer order. Append rather than reorder; once save files exist the id order becomes a persistent format.
 - One block is one metre, units are SI, and one gravity (9.81 m/s²) applies to the player and every body.
 - Walkability has one definition, `standHeight` in `src/world/walk.ts`; generation, pathfinding and animation all use it.

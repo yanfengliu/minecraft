@@ -56,19 +56,24 @@ Walkability has one definition, `standHeight` in `src/world/walk.ts`: feet cell 
 
 ## 4. Rendering
 
-A custom WebGL2 renderer; no scene-graph library. Per frame:
+A custom WebGL2 renderer; no scene-graph library. `src/render/renderer.ts` runs the frame; the off-screen targets are in `targets.ts`, the end of the frame in `postChain.ts`. Per frame, in order:
 
-1. Shadow maps: four cascades of the sun (or moon), depth only, cutout-tested for foliage.
-2. G-buffer: albedo, normal and roughness, baked sky light, block light and ambient occlusion, depth. Section meshes, then instanced entities and debris.
-3. Screen-space ambient occlusion at half resolution, depth-aware blur.
-4. Lighting: sun or moon through the cascades, sky ambient scaled by baked sky light and occlusion, warm block light, emissive, cloud shadows, wetness and snow cover, underwater caustics, aerial perspective.
-5. Sky: atmosphere from a per-frame sky-view lookup, sun, moon with phase, stars, volumetric clouds.
-6. Water and glass, forward shaded: refraction of the lit scene, screen-space reflection with sky fallback, Fresnel, waves, flow, shoreline foam, rain rings.
-7. Particles: rain and snow (occluded by the world heightmap), splashes, smoke, sparks, leaves.
-8. Volumetric fog and light shafts at half resolution.
-9. Bloom, exposure adaptation, tone mapping and grading, antialiasing.
+1. Sky lookup: the atmosphere (Rayleigh, Mie, ozone, single scattering) for every direction into a small texture, plus a twilight term (below).
+2. Clouds: a volume marched at quarter resolution and blended with last frame's.
+3. Shadow maps: four cascades of the key light (sun, or moon at night), depth only, cutout-tested for foliage, updated in turn. Creatures and bodies cast into the nearer three.
+4. G-buffer: albedo and emission, normal and roughness, baked sky light, block light and ambient occlusion, depth. Section meshes, then every creature, loose body, particle and the held item as instanced boxes (`entities/renderer.ts`). A box is one flat colour with a texel-sized grain, or carries a block's six tiles so that a block which leaves the grid keeps its faces.
+5. Ambient occlusion at half resolution with a depth-aware blur. Its normal is rebuilt from depth: the G-buffer normal carries each tile's painted relief and must not be used by any screen-space pass.
+6. Lighting: key light through the cascades and the cloud shadow, sky ambient scaled by baked sky light and occlusion, warm block light, emission, wetness, puddles and snow cover, then fog. Sky pixels are fogged too, by the weather's fog alone.
+7. Water and glass, forward shaded over a copy of the lit scene: refraction, absorption with depth, screen-space reflection with the sky as fallback, Fresnel, waves, flow, surf on the sea and on rivers, rain rings, and caustics on the bed. Spilt (finite) water is marked by the mesher so that being shallow everywhere is not taken for a shoreline.
+8. The block outline, then rain or snow and splash rings as instanced quads, stopped by the world's rain heightmap.
+9. Light shafts: each view ray marched at half resolution through the shadow cascades and the cloud shadow, in air whose density is the weather's fog (same height falloff as the distance fog) plus a little dust, with extinction along the ray; added with a depth-aware upsample.
+10. Bloom, tone mapping and grading, antialiasing.
 
-Section meshes use 8 bytes per vertex: packed position in sixteenths, ambient occlusion, normal, tile layer, sky and block light, tint and wind classes. Textures are generated procedurally at load into a texture array whose layer order is `TILE_NAMES`.
+Light and exposure (`environment.ts`): the key light's colour is the sun's or moon's through the atmosphere; near the horizon it is dimmed further and kept from going pure red. Fog takes light out of the key beam and returns part of it as ambient fill, so thick fog has no shadows. Around sunset and sunrise a twilight term (`twilight()` in `atmosphere.ts`, mirrored in GLSL) adds a blue dome and a warm band toward the sun to the sky lookup and the matching fill to the ambient light: single scattering alone leaves the sky nearly unlit once the sun is low. Exposure is computed from the light, not measured from the frame: it normalises an estimate of lit ground to a brightness that is designed by time of day, so night stays darker than day on purpose, and it opens up when the camera is under cover. Light that is authored, not simulated (torches, glowing tiles, stars, the moon's disc, lightning), is pre-scaled so it reads the same whatever the exposure.
+
+Section meshes use 8 bytes per vertex: packed position in sixteenths, ambient occlusion, normal, tile layer, sky and block light, tint and wind classes; the layout is at the top of `src/mesh/mesher.ts`. Textures are painted procedurally at load (`src/render/tiles/`) into a texture array whose layer order is `TILE_NAMES`, and sampled so texels stay crisp squares under anisotropic filtering.
+
+Looking at it: `scripts/capture.mjs` drives a headless browser on the GPU against the dev server and saves full-resolution frames; a spec can crop to part of the frame. The desktop app's own browser pane crops its screenshots when hidden and is not a substitute.
 
 ## 5. Simulation core
 
@@ -76,9 +81,11 @@ Section meshes use 8 bytes per vertex: packed position in sixteenths, ambient oc
 
 `src/sim/sky.ts` gives the sun and moon directions for latitude 48 N, so day length runs from about 8 hours in winter to 16 in summer.
 
-`Weather` (`src/sim/weather.ts`) is a Markov chain of regimes whose continuous state eases toward regime targets. Simulations read it through `WeatherView`.
+`Weather` (`src/sim/weather.ts`) is a Markov chain of regimes (clear, fair, overcast, rain, storm, fog) whose continuous state eases toward regime targets over a few game hours, so a change is watched, not switched. On still, clear nights it also lays a dawn mist that burns off within a few hours of sunrise. Simulations read it through `WeatherView`.
 
-`src/sim/api.ts` holds the contracts: `EntityView` (what the renderer draws), `InspectInfo`, `SimContext`, the cross-simulation services `WildlifeApi` and `LivestockApi`, `WorldActions`, and the `VillagePlan` with `validateVillagePlan`. World generation and every test fixture must produce a plan that validates.
+`src/sim/api.ts` holds the contracts: `EntityView` (what the renderer draws; `hidden` marks a creature that is out of sight), `InspectInfo` (every bar reads "full is good"), `SimContext`, the cross-simulation services `WildlifeApi` and `LivestockApi`, `WorldActions`, and the `VillagePlan` with `validateVillagePlan`. World generation and every test fixture must produce a plan that validates.
+
+`src/life.ts` builds the one `SimContext` both simulations share in the game and ticks them each clock step: the wildlife first exists, then the village is given its `WildlifeApi`, and the wildlife the village's `LivestockApi` and its people. A frame runs at most 40 steps, so a time-lapse the simulations cannot keep up with slows time instead of the frame rate.
 
 Determinism: simulations take a forked `Rng`, advance only by `SIM_DT`, and never read the wall clock or `Math.random()`. The same seed and the same inputs give the same world.
 
@@ -92,7 +99,9 @@ Routine: each trade has a daily template (rise, breakfast, commute, work blocks,
 
 Work that changes the world: farmers till, sow, tend and harvest real crop blocks on their fields; woodcutters fell real trees through `WorldActions.fellTree` and plant saplings; bakers and smiths light their oven and forge while working; households light lanterns at dusk when someone is home and awake, and put them out at bedtime; the watch lights the street lamps and walks the patrol at night; doors and gates are opened and closed by whoever passes; the shepherd drives the flock to pasture and back. Other trades (miller, brewer and innkeeper, fisher, hunter, weaver, carpenter, miner, smith, storekeeper, priest, reeve) transform goods at their work spots; the fisher and hunter draw on `WildlifeApi`.
 
-Economy: goods are `ECONOMY_GOODS`. Each business keeps stock and coin and posts prices that rise as its stock falls below target and fall as it piles up. Households buy food, firewood, ale, cloth and tools; workers are paid; a village treasury takes a market fee and pays the watch and the priest. Money is conserved: every coin moves between purses, tills and the treasury. The player buys and sells at the same posted prices and moves them like anyone else.
+Economy: goods are `ECONOMY_GOODS`. Each business keeps stock and coin and posts prices that rise as its stock falls below target and fall as it piles up. Households buy food, firewood, ale, cloth and tools. Pay is a common purse, not a pure market: each evening workers take 45% of their business's takings above its float, and the rest goes to the village chest, which pays the watch, the priest and the reeve, gives relief, and pays every adult an equal dividend; purses above 100 coins are levied. Plain wages and prices had left the bakers holding most of the coin. Money is conserved: every coin moves between purses, tills and the chest, and the tests hold the total constant to the coin. The player buys and sells at the same prices as anyone, filling from the cheapest sellers; a larger lot costs more each and sells for less (`src/player/trade.ts` moves the player's side).
+
+As built, and weaker than the paragraphs above say: miners work at the mine's faces and yield stone, coal and ore by odds without removing rock; nobody patrols between about half past eleven and three; opening stocks are sized for a spring start, and a village started in winter goes hungry before its first harvest (no test covers that). In the game a woodcutter's tree is removed whole (section 10).
 
 Movement: A* over standable cells (step up or down one, doors and gates passable, cheaper on paths and roads, expensive across crops, no deep water), with a budget per tick and cached routes. A resident that cannot find a path after repeated tries is moved to its destination and the event counted; tests keep that count near zero.
 
@@ -110,6 +119,8 @@ Movement: walkers follow the ground with `standHeight`, stepping one block, stee
 
 Required tests, headless: three simulated years on a fixture landscape end with every species present and none above its cap; grazing lowers plant cover and rest restores it; predators reduce prey and starve without it; saplings become trees; the same seed reproduces the same state; a tick stays cheap with a few hundred animals.
 
+As built: movement is local steering, with no route planning, so a walker that cannot reach a goal gives it up. Food for birds and ducks is a seasonal supply, gulls draw on the sea's fish, and boar root from a woodland "mast" store; the plants that are real blocks are grass, flowers, bushes, mushrooms and saplings. When a species has all but died out a few of its kind arrive from beyond the map (on by default, off in the stability tests). Every plant eaten or sprouted is a block write, a thousand or two a simulated day.
+
 ## 8. Physics
 
 Code: `src/physics/`. Facade: `Physics` — constructed from a `World`, stepped in real time, exposing body views for the renderer, spawn and pickup calls, a flow query, and an event stream (splash, impact, collapse) for particles.
@@ -126,11 +137,13 @@ Rigid bodies: dynamic boxes and compounds of boxes with mass from material densi
 
 Required tests, headless: a closed basin conserves water to the unit and settles; a breach drains until levels meet; a source refills what is dug beside it; sand dropped from height lands and piles into a slope; cutting a trunk drops the tree and nothing else; a cube dropped on flat ground comes to rest on it and sleeps; a stack of five stays standing; wood floats and stone sinks; the same seed and inputs reproduce the same result.
 
+As built: rigid bodies collide with voxel colliders at half-block resolution, one per 8-cubed chunk, present only near bodies; shapes those cannot express (paths, fences, furniture) get exact boxes. A falling loose block is an animation on the grid, not a rigid body, so it passes through bodies and the player. A body that comes to rest square to the grid goes back into it; one that lies crooked stays a sleeping body, which the player can hit to break into its blocks (`pickBody`, `breakBody`). The player is a pusher, not a collider: walking into rubble shoves it. The cantilever rule applies only to built blocks near a removal. In the game physics steps in real time whatever the pace of the calendar, and stops when the world is paused. The library adds 4.4 MB to the download and is loaded as its own chunk while the island generates. Determinism holds on one machine and build; the build of Rapier used is not its cross-platform deterministic one.
+
 ## 9. Player and UI
 
-First-person: walk, sprint, jump, swim, climb ladders; a box collider against block collision boxes with a half-block step-up. Left button breaks (time by hardness), right button places or uses (doors, gates, picking berries, talking and trading). A hotbar and inventory of item stacks; a purse of coins.
+First-person: walk, sprint, jump, swim, climb ladders, fly (F); a box collider against block collision boxes with a half-block step-up. Left button breaks (time by hardness), right button places or uses (doors, gates, lanterns, picking berries), and on a villager talks or opens trade. A broken block drops as an item body where it stood and is picked up by walking within about a metre and a half; what does not fit in the pack is left lying. The held item is drawn in the hand. A hotbar and inventory of item stacks; a purse of coins.
 
-DOM interface over the canvas: crosshair, hotbar, clock and weather readout, inspector for the creature under the crosshair, trade window, village ledger (prices, stocks, population), wildlife census, settings, and time-lapse control.
+DOM interface over the canvas (`src/ui/`): crosshair, hotbar, clock and weather readout, the card for the creature under the crosshair with a prompt, speech bubbles, and panels: pack (E), village ledger with price histories (L), wildlife census with population curves (K), almanac with the pace of time, the hour and the weather (T), help (H), and the trade window. `[` and `]` change the pace of time, P pauses, F3 shows the frame and physics readout.
 
 `window.__tidewick` exposes a debug interface (teleport, set time and weather, read metrics) used by the browser gate and for inspection.
 
@@ -142,5 +155,9 @@ DOM interface over the canvas: crosshair, hotbar, clock and weather readout, ins
 - 2026-11-11 — Baked voxel light supplies ambient-sky visibility and torch light; sun and moon shadows come from shadow maps. The baked channels are cheap, exact at block scale and give dark interiors and caves; shadow maps give crisp moving shadows.
 - 2026-11-11 — Natural water bodies are infinite sources; only spilled or added water is finite. A river simulated as finite flow would never settle and would re-mesh its whole length for ever; baked flow on source cells looks and pushes the same and costs nothing.
 - 2026-11-11 — One gravity, 9.81 m/s², SI units, for the player and every body, with a jump of about 1.15 m so full blocks are still climbable.
-- 2026-11-11 — Rigid bodies use the Rapier physics library (pending confirmation at integration): stable stacking and compound bodies are where a proven solver beats a hand-rolled one. It is the only runtime dependency.
+- 2026-11-11 — Rigid bodies use the Rapier physics library (`@dimforge/rapier3d-compat` 0.21), confirmed at integration: stable stacking and compound bodies are where a proven solver beats a hand-rolled one. Its voxel colliders slide a cube across block seams where unit boxes caught, and one collider per chunk keeps an edit from waking every sleeping body. It is the only runtime dependency, 4.4 MB, loaded as its own chunk.
+- 2026-11-11 — A woodcutter's tree is removed whole; only a tree the player cuts falls through physics. The village pays the woodcutter in logs for the tree he fells, and a trunk left lying as blocks as well would be the same wood twice. Having the villagers gather landed logs instead is the better end state and is not built.
+- 2026-11-11 — Exposure is computed from the light of the hour, not measured from the frame, and aimed at a brightness designed by time of day. A measured exposure would lift night to the brightness of day and would pump with what the camera happens to face.
+- 2026-11-11 — The sky is single scattering plus an explicit twilight term, not a multiple-scattering model. Single scattering alone left sunset with almost no sky light, which read as an orange world with black shadows; a designed dome and horizon band, shared by the sky lookup and the ambient light, costs nothing per pixel and can be tuned by eye.
+- 2026-11-11 — The village and the wildlife run on the main thread, a bounded number of steps a frame. Measured in the game they cost about 0.2 ms a step together with 62 residents and 353 animals; moving them to a worker would buy little and would put the world's arrays behind a message boundary.
 - 2026-11-11 — No save files yet. Block state ids are positional in the block table; when saving arrives that order becomes a persistent format and must be versioned.
