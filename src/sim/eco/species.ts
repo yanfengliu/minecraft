@@ -81,7 +81,7 @@ export interface Species {
   /** Seconds one mouthful takes. */
   eatTime: number;
   diet: number;
-  /** Breeds in spring, summer, autumn, winter. */
+  /** Bears its young in spring, summer, autumn, winter. The courting runs a gestation ahead of the births. */
   breed: readonly [boolean, boolean, boolean, boolean];
   litter: readonly [number, number];
   /** Days from courtship to birth. */
@@ -118,7 +118,7 @@ export const SPECIES: readonly Species[] = [
     index: DEER, kind: 'deer', label: 'Deer', male: 'Stag', female: 'Doe', young: 'Fawn', band: 'herd',
     groupType: GT_BAND, groupMin: 3, groupMax: 7,
     walk: 1.2, run: 8.8, fly: 0, stamina: 40, flight: 16, wary: [14, 22],
-    lifespan: 150, mature: 20, wean: 6, hungerPerDay: 0.5, bite: 0.05, eatTime: 2.4,
+    lifespan: 150, mature: 20, wean: 6, hungerPerDay: 0.5, bite: 0.065, eatTime: 2.4,
     diet: FOOD_GRASS | FOOD_FLOWER | FOOD_BERRY,
     breed: SPRING, litter: [1, 2], gestation: 2.5, rebreed: 18, fertility: 0.4, birthScale: 0.5, meat: 5, hide: 2,
     habit: [-1.5, 2, -2, 1.5, ACT_REST, ACT_SLEEP], think: 14, capFactor: 2, capMin: 10, arrive: 3,
@@ -136,7 +136,7 @@ export const SPECIES: readonly Species[] = [
     index: BOAR, kind: 'boar', label: 'Wild boar', male: 'Boar', female: 'Sow', young: 'Piglet', band: 'sounder',
     groupType: GT_BAND, groupMin: 2, groupMax: 6,
     walk: 1.1, run: 7.2, fly: 0, stamina: 35, flight: 12, wary: [11, 18],
-    lifespan: 120, mature: 16, wean: 5, hungerPerDay: 0.5, bite: 0.05, eatTime: 2.5,
+    lifespan: 120, mature: 16, wean: 5, hungerPerDay: 0.5, bite: 0.065, eatTime: 2.5,
     diet: FOOD_GRASS | FOOD_BERRY | FOOD_MUSHROOM,
     breed: SPRING, litter: [1, 3], gestation: 3, rebreed: 18, fertility: 0.3, birthScale: 0.4, meat: 4, hide: 1,
     habit: [-3, 1, -1.5, 4, ACT_SLEEP, ACT_REST], think: 14, capFactor: 2, capMin: 8, arrive: 2,
@@ -145,7 +145,7 @@ export const SPECIES: readonly Species[] = [
     index: FOX, kind: 'fox', label: 'Fox', male: 'Dog fox', female: 'Vixen', young: 'Cub', band: 'den',
     groupType: GT_SOLO, groupMin: 1, groupMax: 4,
     walk: 1.5, run: 8.4, fly: 0, stamina: 45, flight: 14, wary: [0, 0],
-    lifespan: 90, mature: 14, wean: 5, hungerPerDay: 0.34, bite: 0.75, eatTime: 22,
+    lifespan: 90, mature: 14, wean: 5, hungerPerDay: 0.25, bite: 0.75, eatTime: 22,
     diet: FOOD_BERRY,
     breed: SPRING, litter: [2, 3], gestation: 3, rebreed: 20, fertility: 0.5, birthScale: 0.45, meat: 0, hide: 1,
     habit: [-3, 0.5, -1, 4, ACT_SLEEP, ACT_FEED], think: 10, capFactor: 1.5, capMin: 4, arrive: 2,
@@ -154,7 +154,7 @@ export const SPECIES: readonly Species[] = [
     index: WOLF, kind: 'wolf', label: 'Wolf', male: 'Wolf', female: 'She-wolf', young: 'Pup', band: 'pack',
     groupType: GT_PACK, groupMin: 2, groupMax: 5,
     walk: 1.6, run: 8.6, fly: 0, stamina: 75, flight: 20, wary: [0, 0],
-    lifespan: 150, mature: 20, wean: 6, hungerPerDay: 0.18, bite: 0.6, eatTime: 55,
+    lifespan: 150, mature: 20, wean: 6, hungerPerDay: 0.15, bite: 0.6, eatTime: 55,
     diet: 0,
     breed: SPRING, litter: [1, 3], gestation: 3, rebreed: 22, fertility: 0.5, birthScale: 0.45, meat: 0, hide: 2,
     habit: [-3, 1, -1.5, 4, ACT_SLEEP, ACT_FEED], think: 10, capFactor: 1.25, capMin: 5, arrive: 3,

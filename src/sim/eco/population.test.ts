@@ -59,7 +59,8 @@ describe('grazers and the plants they live on', () => {
     }
     expect(countForage(rig.world)).toBe(0);
     rig.days(1.5);
-    const hungry = rig.living().filter((v) => (rig.eco.inspect(v.id)?.bars[0]?.value ?? 0) > 0.6).length;
+    // The inspector's first bar is how well fed the animal is: full is good, so a hungry animal reads low.
+    const hungry = rig.living().filter((v) => (rig.eco.inspect(v.id)?.bars[0]?.value ?? 1) < 0.4).length;
     expect(hungry).toBeGreaterThan(rig.living().length * 0.7);
     expect(rig.row('deer').starved + rig.row('rabbit').starved).toBe(0);
     rig.days(4.5);
@@ -94,7 +95,10 @@ describe('hunters and the hunted', () => {
     rig.days(4);
     // Still alive, and hungry.
     expect(rig.count('fox') + rig.count('wolf')).toBeGreaterThanOrEqual(6);
-    rig.days(9);
+    // It is slow: a wolf goes six days from a full belly before it is starving and a hardy one lasts four more on
+    // nothing, and the litters born in these first days outlive their mothers by a week. Across ten seeds the
+    // last of them died between day 13 and day 18.
+    rig.days(18);
     for (const kind of ['fox', 'wolf']) {
       const row = rig.row(kind);
       expect(row.count).toBe(0);

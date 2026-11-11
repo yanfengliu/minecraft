@@ -13,8 +13,8 @@ import { BOAR, GT_WARREN } from './species';
 import type { Eco } from './state';
 import {
   type Animal, GM_ALARM, GM_FEED, GM_SHELTER, GM_SLEEP, type Group, MODE_STILL, MODE_WALK, ST_COURT, ST_EAT, ST_FLEE, ST_HIDE,
-  ST_IDLE, ST_REST, ST_SEEK, ST_SLEEP, ST_TRAVEL, ST_WANDER, WHY_BAND, WHY_DAY, WHY_FED, WHY_HABIT, WHY_HUNGRY, WHY_NIGHT,
-  WHY_PERSON, WHY_RAIN, WHY_STARVING,
+  ST_IDLE, ST_REST, ST_SEEK, ST_SLEEP, ST_TRAVEL, ST_WANDER, WHY_BAND, WHY_DAY, WHY_FED, WHY_HABIT, WHY_HUNGRY, WHY_MOTHER,
+  WHY_NIGHT, WHY_NONE, WHY_PERSON, WHY_RAIN, WHY_STARVING,
 } from './types';
 
 /** How far from where the group is feeding a member will graze. */
@@ -45,6 +45,7 @@ function seatZ(a: Animal): number {
 function enterBurrow(e: Eco, a: Animal, seconds: number): void {
   if (a.mode !== MODE_STILL) halt(a);
   a.state = ST_HIDE;
+  a.hidden = true;
   a.until = e.now + seconds;
   a.anim = 'idle';
   wait(e, a, Math.max(1, Math.min(seconds, LONG_NAP)));
@@ -74,13 +75,19 @@ export function thinkGrazer(e: Eco, a: Animal): void {
   // A burrow is safe: nothing reaches a rabbit there, and it stays until all is quiet and it is time to feed.
   if (a.state === ST_HIDE) {
     if (e.personNear(a.x, a.y, a.z, sp.flight)) a.until = Math.max(a.until, now + 8);
-    if (now < a.until || a.alarmUntil > now || g.mode !== GM_FEED) {
+    // A kit stays down as long as its mother does.
+    const below = a.mother !== null && a.mother.state === ST_HIDE;
+    if (now < a.until || a.alarmUntil > now || g.mode !== GM_FEED || below) {
       a.anim = g.mode === GM_SLEEP ? 'sleep' : 'idle';
-      if (now >= a.until && a.alarmUntil <= now) a.why = g.mode === GM_SLEEP ? WHY_NIGHT : g.mode === GM_SHELTER ? WHY_RAIN : WHY_DAY;
-      wait(e, a, now < a.until ? Math.min(a.until - now + 0.2, LONG_NAP) : LONG_NAP);
+      if (now >= a.until && a.alarmUntil <= now) {
+        a.why = g.mode === GM_SLEEP ? WHY_NIGHT : g.mode === GM_SHELTER ? WHY_RAIN : g.mode === GM_FEED ? WHY_MOTHER : WHY_DAY;
+      }
+      // The warren coming out wakes its members; only a kit waiting on its mother has to keep looking.
+      wait(e, a, now < a.until ? Math.min(a.until - now + 0.2, LONG_NAP) : below && g.mode === GM_FEED ? 3 : LONG_NAP);
       return;
     }
     a.state = ST_IDLE;
+    a.hidden = false;
   }
 
   // --- danger comes before everything ---
@@ -115,7 +122,13 @@ export function thinkGrazer(e: Eco, a: Animal): void {
     return;
   }
 
-  if (a.mother && followMother(e, a)) return;
+  // A youngster keeps to its mother. A rabbit kit goes down the burrow on its own when the warren is in, and
+  // after its mother when she has gone to ground: it does not sit at the mouth of the burrow waiting for her.
+  if (a.mother && sp.groupType === GT_WARREN && a.mother.state === ST_HIDE) {
+    layUp(e, a, g, WHY_MOTHER);
+    return;
+  }
+  if (a.mother && (sp.groupType !== GT_WARREN || g.mode === GM_FEED) && followMother(e, a)) return;
 
   if (a.state === ST_EAT) {
     if (now < a.until) {
@@ -249,10 +262,10 @@ function feed(e: Eco, a: Animal, g: Group): void {
   wait(e, a, a.mode === MODE_WALK ? ON_THE_WAY : Math.max(1, a.until - now));
 }
 
-/** Go to where the group lies up and rest or sleep there. */
-function layUp(e: Eco, a: Animal, g: Group): void {
+/** Go to where the group lies up and rest or sleep there: for the group's reason, or for one of the animal's own. */
+function layUp(e: Eco, a: Animal, g: Group, reason = WHY_NONE): void {
   const warren = a.sp.groupType === GT_WARREN;
-  const why = g.mode === GM_SLEEP ? WHY_NIGHT : g.mode === GM_SHELTER ? WHY_RAIN : WHY_DAY;
+  const why = reason !== WHY_NONE ? reason : g.mode === GM_SLEEP ? WHY_NIGHT : g.mode === GM_SHELTER ? WHY_RAIN : WHY_DAY;
   let tx: number;
   let tz: number;
   let near: number;

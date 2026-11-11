@@ -5,6 +5,7 @@
 // dark night with an empty belly it will slip into the village after hens.
 // It goes hungry when rabbits are scarce and starves when there are none.
 
+import type { EntityKind } from '../api';
 import { alarmGroup, eatFood, findFood, fleeFrom, runSpeed, scare, vigour, wait } from './brain';
 import { H_MEADOW, H_WOOD } from './habitat';
 import { RAID_REACH, STRIKE, denRest, denYoung, mealOf, scatter } from './hunting';
@@ -18,8 +19,9 @@ import {
   WHY_STARVING, WHY_TIRED,
 } from './types';
 
-/** Hunger above which a fox goes looking for a meal. */
-const HUNT_ABOVE = 0.35;
+/** Hunger above which a fox goes looking for a meal: enough that a whole rabbit is not wasted on it. */
+const HUNT_ABOVE = 0.55;
+const HENS: readonly EntityKind[] = ['chicken'];
 /** The chance that a spring kills a fit, full-grown rabbit. */
 const FOX_KILLS = 0.6;
 /** A fox that creeps to within this distance of a rabbit unnoticed has it at its mercy. */
@@ -193,7 +195,7 @@ function huntAlone(e: Eco, a: Animal): void {
   // Hens, once the village is dark. Not every night: a fox that has just been there lies low.
   const farm = e.ctx.livestock;
   if (farm && e.night && a.hunger > 0.5 && now >= a.nextRaid) {
-    const v = farm.findLivestock(a.x, a.z, RAID_REACH);
+    const v = farm.findLivestock(a.x, a.z, RAID_REACH, HENS);
     if (v && v.kind === 'chicken' && v.anim !== 'dead') {
       a.quarry = v;
       a.bold = true;
@@ -272,7 +274,8 @@ function huntingGround(e: Eco, a: Animal): void {
     const dz = g.hz - a.z;
     const d = Math.sqrt(dx * dx + dz * dz);
     if (d > 180 || e.habitat.crossesWater(a.x, a.z, g.hx, g.hz)) continue;
-    const w = (g.members.length * e.rng.float()) / (30 + d);
+    // Much the likeliest to go where the rabbits are thickest.
+    const w = (g.members.length * g.members.length * e.rng.float()) / (30 + d);
     if (w > bestW) {
       bestW = w;
       best = g;

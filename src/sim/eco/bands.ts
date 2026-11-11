@@ -13,7 +13,8 @@ import { WALK_OPT, halt, walkTo } from './motion';
 import { addGroup, closeGroup, pairUp } from './population';
 import { ACT_FEED, ACT_REST, BOAR, GT_WARREN } from './species';
 import type { Eco } from './state';
-import { type Animal, GM_ALARM, GM_FEED, GM_REST, GM_SHELTER, GM_SLEEP, type Group } from './types';
+import { FOOD } from './terrain';
+import { type Animal, GM_ALARM, GM_FEED, GM_REST, GM_SHELTER, GM_SLEEP, type Group, ST_COURT } from './types';
 
 /** A warren's rabbits graze this near home while the grass lasts, and this far when it does not. */
 const RANGE_MIN = 10;
@@ -93,12 +94,17 @@ export function updateBand(e: Eco, g: Group): void {
 
   const pair = pairUp(e, g);
   if (pair) {
+    // He comes over to her and she waits for him; either one that is down the burrow stays as it is.
     const [f, m] = pair;
-    halt(f);
-    f.anim = 'idle';
-    walkTo(e, m, f.x + 0.8, f.z, sp.walk * 1.5, 1.2);
-    wait(e, f, 1);
-    wait(e, m, 1);
+    if (f.state === ST_COURT) {
+      halt(f);
+      f.anim = 'idle';
+      wait(e, f, 1);
+    }
+    if (m.state === ST_COURT) {
+      walkTo(e, m, f.x + 0.8, f.z, sp.walk * 1.5, 1.2);
+      wait(e, m, 1);
+    }
   }
   if (now >= g.nextSplit) {
     if (n >= sp.groupMax) split(e, g);
@@ -106,20 +112,44 @@ export function updateBand(e: Eco, g: Group): void {
   }
 }
 
+/** A rough measure of how much there is to eat around a spot: glances at a dozen cells of ground there. */
+function forageNear(e: Eco, x: number, z: number, diet: number): number {
+  const w = e.world;
+  let n = 0;
+  for (let i = 0; i < 12; i++) {
+    const px = Math.floor(x + e.rng.range(-7, 7));
+    const pz = Math.floor(z + e.rng.range(-7, 7));
+    if ((FOOD[w.get(px, w.height(px, pz), pz)] as number) & diet) n++;
+  }
+  return n;
+}
+
+/**
+ * Choose where a herd or sounder feeds next: of a few reachable places, the
+ * one with the most to eat. A herd that picked blindly would starve on a bare
+ * patch with forage standing a minute's walk away.
+ */
 function pickFeed(e: Eco, g: Group): void {
   const h = e.habitat;
   const spot = e.spot;
-  const boar = g.sp.index === BOAR;
-  for (let t = 0; t < 6; t++) {
+  const sp = g.sp;
+  const boar = sp.index === BOAR;
+  // While the forest floor has mast in it, boar mostly root in their home wood.
+  const rooting = boar && e.mast > e.mastCap * 0.2 && e.rng.chance(0.6);
+  let best = -1;
+  for (let t = 0; t < 7; t++) {
     // Boar keep to their home wood and its edge; deer range over the meadow, farther if they must.
     const ok = boar
-      ? e.rng.chance(0.6) ? h.pickNear(H_WOOD, g.hx, g.hz, 0, 30, e.rng, spot) : h.pickNear(H_MEADOW, g.hx, g.hz, 8, 48, e.rng, spot)
-      : h.pickNear(H_MEADOW, g.mx, g.mz, 8, t < 3 ? 60 : 110, e.rng, spot);
+      ? rooting ? h.pickNear(H_WOOD, g.hx, g.hz, 0, 30, e.rng, spot) : h.pickNear(H_MEADOW, g.hx, g.hz, 8, 55, e.rng, spot)
+      : h.pickNear(H_MEADOW, g.mx, g.mz, 8, t < 4 ? 60 : 110, e.rng, spot);
     if (!ok || h.inAvoid(spot.x, spot.z) || h.crossesWater(g.mx, g.mz, spot.x, spot.z)) continue;
     if (e.personNear(spot.x, spot.y, spot.z, 24)) continue;
+    const score = rooting ? 0 : forageNear(e, spot.x, spot.z, sp.diet);
+    if (score <= best) continue;
+    best = score;
     g.ax = spot.x;
     g.az = spot.z;
-    break;
+    if (rooting) break;
   }
   g.hasFeed = true;
   g.feedUntil = e.now + e.rng.range(100, 220);

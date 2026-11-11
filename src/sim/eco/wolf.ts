@@ -5,6 +5,7 @@
 // chase. Then the pack eats together. Now and then it takes a sheep at pasture.
 // With no prey it starves.
 
+import type { EntityKind } from '../api';
 import { alarm, fleeFrom, runSpeed, scare, vigour, wait } from './brain';
 import { H_HIGH, H_MEADOW } from './habitat';
 import { RAID_REACH, STRIKE, denRest, denYoung, mealOf } from './hunting';
@@ -20,6 +21,15 @@ import {
 
 /** Mean hunger above which the pack sets out. */
 const PACK_HUNTS_ABOVE = 0.5;
+const SHEEP: readonly EntityKind[] = ['sheep'];
+/**
+ * How hard scarce prey is to find. Each day the pack picks up the trail of a
+ * species with a chance that is certain while the species stands at `PLENTY`
+ * of its cap or more and falls away as the square of its numbers below that.
+ * The fewer deer there are, the more days pass without one being found, which
+ * is what lets a thinned herd recover.
+ */
+const PLENTY = 0.45;
 /** The chance that a wolf which has closed with a fit, full-grown animal brings it down. */
 const WOLF_KILLS = 0.5;
 /** How far off the pack notices deer or boar. */
@@ -96,7 +106,12 @@ export function updatePack(e: Eco, g: Group): void {
       g.hasFeed = false;
       wake(e, g);
     }
-    const q = pickQuarry(e, lead);
+    if (g.rangeDay !== e.day) {
+      // One cast for a trail each day, however many times the pack sets out.
+      g.rangeDay = e.day;
+      g.finds = trails(e);
+    }
+    const q = pickQuarry(e, lead, g.finds);
     if (q) {
       g.target = q;
       g.raid = null;
@@ -132,9 +147,22 @@ export function updatePack(e: Eco, g: Group): void {
   }
 }
 
+/** Which of the pack's prey it will find today, as a mask of species bits. */
+function trails(e: Eco): number {
+  let mask = 0;
+  for (const k of [DEER, BOAR]) {
+    const cap = e.cap[k] as number;
+    if (cap <= 0) continue;
+    const plenty = (e.count[k] as number) / (cap * PLENTY);
+    if (plenty >= 1 || e.rng.chance(plenty * plenty)) mask |= bit(k);
+  }
+  return mask;
+}
+
 /** The deer or boar in reach that the pack would most easily bring down: near, and young, old or starving. */
-function pickQuarry(e: Eco, lead: Animal): Animal | null {
-  const n = e.hash.collect(lead.x, lead.z, PACK_SENSE, BIG_GAME, e.found);
+function pickQuarry(e: Eco, lead: Animal, finds: number): Animal | null {
+  if (finds === 0) return null;
+  const n = e.hash.collect(lead.x, lead.z, PACK_SENSE, BIG_GAME & finds, e.found);
   let best: Animal | null = null;
   let bestScore = Infinity;
   for (let i = 0; i < n; i++) {
@@ -151,11 +179,10 @@ function pickQuarry(e: Eco, lead: Animal): Animal | null {
 }
 
 /**
- * Choose where the pack goes to look for prey: toward a herd or sounder,
- * larger and nearer ones more often. Scarce prey is hard to find: the fewer
- * there are of a species, the more often the pack simply fails to pick up its
- * trail, which is what lets a thinned herd recover. Now and then, and when
- * there is nothing wild to follow, sheep out at pasture will do.
+ * Choose where the pack goes to look for prey: toward a herd or sounder of a
+ * species whose trail it has found today, larger and nearer ones more
+ * often. Now and then, and when there is nothing wild to follow, sheep out at
+ * pasture will do.
  */
 function huntingCountry(e: Eco, g: Group): void {
   const h = e.habitat;
@@ -164,9 +191,7 @@ function huntingCountry(e: Eco, g: Group): void {
   let bestW = 0;
   for (const other of e.groups) {
     const k = other.sp.index;
-    if (other.gone || (k !== DEER && k !== BOAR) || other.members.length === 0) continue;
-    const cap = e.cap[k] as number;
-    if (cap > 0 && e.rng.float() > ((e.count[k] as number) / cap) * 2.5) continue;
+    if (other.gone || (k !== DEER && k !== BOAR) || other.members.length === 0 || !(g.finds & bit(k))) continue;
     // No trail leads across water the pack cannot cross.
     if (h.crossesWater(g.mx, g.mz, other.mx, other.mz)) continue;
     const dx = other.mx - g.mx;
@@ -180,7 +205,7 @@ function huntingCountry(e: Eco, g: Group): void {
   g.raid = null;
   const farm = e.ctx.livestock;
   if (farm && (!best || e.rng.chance(0.12))) {
-    const v = farm.findLivestock(g.mx, g.mz, RAID_REACH);
+    const v = farm.findLivestock(g.mx, g.mz, RAID_REACH, SHEEP);
     if (v && v.kind === 'sheep' && v.anim !== 'dead' && !h.inAvoid(v.x, v.z)) {
       g.raid = v;
       g.ax = v.x;

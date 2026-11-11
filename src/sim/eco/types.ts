@@ -107,6 +107,8 @@ export class Animal implements EntityView {
   scale = 1;
   held = -1;
   bubble = '';
+  /** Out of sight, down a burrow: the game neither draws nor picks it. */
+  hidden = false;
 
   // --- identity ---
   sp: Species;
@@ -117,6 +119,8 @@ export class Animal implements EntityView {
   lifespan = 0;
   /** Full-grown scale; the young grow toward it. */
   size = 1;
+  /** Constitution: how long it lasts once starving, relative to the average. */
+  grit = 1;
   alive = true;
   /** Index in the simulation's animal list, or -1 when not in it (dead and removed, or away for the winter). */
   slot = -1;
@@ -270,6 +274,8 @@ export class Group {
   nextCourt = 0;
   /** Clock time before which the group will not try again to divide. */
   nextSplit = 0;
+  /** Species (as a mask of species bits) whose trail a pack has picked up today; `rangeDay` is the day that was decided. */
+  finds = 0;
   /** A pack's quarry: a wild animal, or a farm animal known only by its view. */
   target: Animal | null = null;
   raid: EntityView | null = null;

@@ -19,7 +19,7 @@ describe('finding and taking game', () => {
       let bestD = radius;
       for (const v of rig.living()) {
         const d = Math.hypot(v.x - x, v.z - z);
-        if (kinds.includes(v.kind) && d < bestD) {
+        if (kinds.includes(v.kind) && !v.hidden && d < bestD) {
           bestD = d;
           best = v;
         }
@@ -53,6 +53,30 @@ describe('finding and taking game', () => {
     const second = findAnimal(128, 128, 400, ['deer']) as EntityView;
     expect(second).not.toBe(first);
     expect(second.anim).not.toBe('dead');
+  });
+
+  it('a rabbit down its burrow is not there to be found, and is again when it comes up', () => {
+    // The small hours: the warrens are asleep below ground.
+    const rig = makeRig({ ...only({ rabbit: 16 }), startDay: 8, startHour: 2, weather: 'clear' });
+    const { findAnimal } = rig.eco.wildlife;
+    rig.days(0.03);
+    const rabbits = rig.living('rabbit');
+    const below = rabbits.filter((v) => v.hidden);
+    expect(rabbits.length).toBe(16);
+    expect(below.length).toBeGreaterThanOrEqual(13);
+    // Standing on the burrow, a hunter finds no rabbit in it; at most one that is still above ground nearby.
+    for (const v of below) expect(findAnimal(v.x, v.z, 3, ['rabbit'])?.hidden ?? false).toBe(false);
+    const up = rabbits.filter((v) => !v.hidden);
+    const nearestUp = (x: number, z: number): EntityView | null => up.reduce<EntityView | null>((best, v) => (!best || Math.hypot(v.x - x, v.z - z) < Math.hypot(best.x - x, best.z - z) ? v : best), null);
+    expect(findAnimal(128, 128, 400, ['rabbit'])).toBe(nearestUp(128, 128));
+
+    // Morning: they are out feeding, and the nearest of them is found as any animal is.
+    rig.days(0.17);
+    const out = rig.living('rabbit').filter((v) => !v.hidden);
+    expect(out.length).toBeGreaterThanOrEqual(10);
+    const got = findAnimal(128, 128, 400, ['rabbit']) as EntityView;
+    expect(got.hidden).toBe(false);
+    for (const v of out) expect(Math.hypot(v.x - 128, v.z - 128)).toBeGreaterThanOrEqual(Math.hypot(got.x - 128, got.z - 128) - 1e-9);
   });
 
   it('harvest kills an animal once and gives what it yields', () => {
@@ -173,7 +197,7 @@ describe('the inspector, the census and the history', () => {
       expect(info.lines.length).toBeGreaterThanOrEqual(2);
       expect(info.lines[0]).toMatch(/^[A-Z].*\.$/);
       if (/^(It|Someone|A hunter|This|The)/.test(info.lines[1] ?? '')) reasons++;
-      expect(info.bars.map((b) => b.label)).toEqual(['Hunger', 'Energy', 'Health', 'Age']);
+      expect(info.bars.map((b) => b.label)).toEqual(['Fed', 'Energy', 'Health', 'Age']);
       for (const b of info.bars) {
         expect(b.value).toBeGreaterThanOrEqual(0);
         expect(b.value).toBeLessThanOrEqual(1);

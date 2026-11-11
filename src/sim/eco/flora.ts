@@ -374,8 +374,9 @@ export class Flora {
       // Three to five days, fixed for each sapling by where it stands.
       if (age < SAPLING_DAYS + (hash32(key) % 3) || e.season === WINTER) continue;
       if (w.exposed(x, y, z) && w.skyLight(x, y, z) >= SAPLING_LIGHT && this.roomToGrow(x, y, z)) {
-        // Not while an animal is standing where the trunk and crown will be.
-        if (e.hash.nearest(x + 0.5, z + 0.5, 4, this.inTheWay, null, -1)) continue;
+        // Not while an animal is standing, or a bird perched, where the trunk and crown will be: a big oak's
+        // limbs carry leaves five blocks out from the trunk.
+        if (e.hash.nearest(x + 0.5, z + 0.5, 7, this.inTheWay, null, -1)) continue;
         if (growTree(w, x, y, z, species, this.rng)) {
           this.saplings.delete(key);
           this.treesGrown++;

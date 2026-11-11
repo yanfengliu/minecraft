@@ -90,8 +90,9 @@ export function inspectAnimal(e: Eco, a: Animal): InspectInfo {
     title: sp.label,
     subtitle: `${grown ? (a.female ? sp.female : sp.male) : sp.young}, ${age(days)}`,
     lines,
+    // Every bar reads "full is good", as the village's do, so the animal's hunger is shown as how well fed it is.
     bars: [
-      { label: 'Hunger', value: a.hunger },
+      { label: 'Fed', value: 1 - a.hunger },
       { label: 'Energy', value: a.energy },
       { label: 'Health', value: a.alive ? a.health : 0 },
       { label: 'Age', value: Math.min(1, (e.now - a.born) / a.lifespan) },

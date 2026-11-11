@@ -26,7 +26,7 @@ import {
   SONGBIRD, WILD_KINDS, WOLF, type WildKind, kindIndex,
 } from './species';
 import { Eco } from './state';
-import { type Animal, DIED_AGE, DIED_HUNGER, DIED_HUNTER, DIED_PREDATOR, type Group } from './types';
+import { type Animal, DIED_AGE, DIED_HUNGER, DIED_HUNTER, DIED_PREDATOR, type Group, ST_HIDE } from './types';
 import { catchFish, fishAbundance, tendWaters, thinkFish, updateSchool } from './water';
 import { thinkWolf, updatePack } from './wolf';
 
@@ -127,7 +127,8 @@ export class EcoSim {
           const k = kindIndex(kind);
           if (k >= 0) mask |= 1 << k;
         }
-        return mask === 0 ? null : e.hash.nearest(x, z, radius, mask, null, -1);
+        // Not a rabbit down its burrow: the hunter cannot reach what is underground.
+        return mask === 0 ? null : e.hash.nearest(x, z, radius, mask, null, ST_HIDE);
       },
       harvest: (id) => {
         const a = e.byId.get(id);

@@ -15,15 +15,39 @@ import {
   ST_ROOST, ST_SLEEP, WHY_MOTHER, WHY_PREDATOR,
 } from './types';
 
-/** Days of going without, once starving, before an animal dies of it. */
-const STARVE_DAYS = 2;
+/**
+ * Days of going without, once starving, before an animal of average
+ * constitution dies of it. Constitutions differ, so a hungry herd thins over
+ * some days, the survivors finding more as it does, rather than dying as one.
+ */
+const STARVE_DAYS = 3;
 /** Days of eating well to mend from the brink. */
 const MEND_DAYS = 4;
-/** Hunger a bush of berries takes off, relative to a mouthful of grass, and at most. */
+/**
+ * Hunger a bush of berries takes off, relative to a mouthful of grass, and at
+ * most: never more than about a third of what the animal needs in a day, so
+ * that berries take the edge off a fox's hunger without keeping it alive.
+ */
 const BERRY_WORTH = 2.5;
 const BERRY_MOST = 0.15;
-/** Chance, each time it is put to the test, that an animal notices a hunter creeping up within its wariness. */
-const NOTICE = 0.22;
+const BERRY_SHARE = 0.35;
+/**
+ * Chance, each time it is put to the test, that an animal notices a hunter
+ * creeping up within its wariness. Many eyes: in a big group each animal
+ * leaves the watching to the others and is easily surprised; one of the last
+ * few in a group must keep its own watch, and rarely is. This is what makes a
+ * thinned warren hard to hunt, and so lets it recover.
+ */
+const NOTICE_MANY = 0.2;
+const NOTICE_FEW = 0.75;
+const MANY = 10;
+const FEW = 2;
+
+function notices(e: Eco, p: Animal): boolean {
+  const n = p.group.members.length;
+  const t = n >= MANY ? 1 : n <= FEW ? 0 : (n - FEW) / (MANY - FEW);
+  return e.rng.chance(NOTICE_FEW + (NOTICE_MANY - NOTICE_FEW) * t);
+}
 /** Species that are somebody's prey and so watch for hunters. */
 export const PREY = bit(DEER) | bit(RABBIT) | bit(BOAR);
 
@@ -59,7 +83,7 @@ export function needs(e: Eco, a: Animal): boolean {
   if (a.mother) suckle(a, a.mother, dt);
   if (a.hunger >= 1) {
     a.hunger = 1;
-    a.health -= dt / (STARVE_DAYS * DAY_SECONDS);
+    a.health -= dt / (STARVE_DAYS * DAY_SECONDS * a.grit);
     if (a.health <= 0) {
       kill(e, a, DIED_HUNGER);
       return false;
@@ -152,7 +176,7 @@ export function scare(e: Eco, hunter: Animal, running: boolean): void {
     const dz = p.z - hunter.z;
     if (dx * dx + dz * dz > wary * wary) continue;
     if (!running) {
-      if (e.rng.chance(NOTICE)) alarm(e, p, hunter.x, hunter.z, WHY_PREDATOR);
+      if (notices(e, p)) alarm(e, p, hunter.x, hunter.z, WHY_PREDATOR);
       continue;
     }
     alarm(e, p, hunter.x, hunter.z, WHY_PREDATOR);
@@ -234,7 +258,7 @@ export function eatFood(e: Eco, a: Animal): boolean {
   let worth = a.sp.bite;
   if (s === B.berry_bush + 1) {
     e.flora.strip(a.foodX, a.foodY, a.foodZ);
-    worth = Math.min(worth * BERRY_WORTH, BERRY_MOST);
+    worth = Math.min(worth * BERRY_WORTH, BERRY_MOST, a.sp.hungerPerDay * BERRY_SHARE);
   } else {
     w.set(a.foodX, a.foodY, a.foodZ, B.air);
   }
