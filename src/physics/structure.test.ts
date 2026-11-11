@@ -43,6 +43,12 @@ function above(world: World): Map<string, number> {
   return out;
 }
 
+function count(world: World, pred: (state: number) => boolean): number {
+  let n = 0;
+  for (let y = GROUND + 1; y < world.sy; y++) for (let z = 0; z < world.sz; z++) for (let x = 0; x < world.sx; x++) if (pred(world.get(x, y, z))) n++;
+  return n;
+}
+
 function groundIntact(world: World): boolean {
   for (let z = 0; z < world.sz; z++) for (let x = 0; x < world.sx; x++) if (world.get(x, GROUND, z) !== B.grass) return false;
   return true;
@@ -95,6 +101,22 @@ describe('structure', () => {
       expect(r.events.filter((e) => e.type === 'collapse')).toHaveLength(1);
       console.log(`structure tree (${species}): ${logs} logs, ${leaves} leaves -> body of ${piece.cells.length} cells, ${burst} leaves burst`);
     }
+  });
+
+  it('fells a tree that stands against a cliff', () => {
+    const world = createFlatWorld(64, 64, GROUND, 96);
+    // A wall of rock four high right beside where the trunk will be.
+    for (let y = GROUND + 1; y <= GROUND + 4; y++) for (let z = 26; z <= 34; z++) for (let x = 31; x <= 36; x++) world.setRaw(x, y, z, B.stone);
+    const r = rig(world);
+    growTree(world, 30, GROUND + 1, 30, 'birch', new Rng(21), true);
+    const logs = count(world, (s) => IS_LOG[s] === 1);
+    world.set(30, GROUND + 1, 30, B.air);
+    r.structure.step();
+    // The trunk touched the rock all the way up; it is not held by it.
+    expect(r.pieces).toHaveLength(1);
+    expect(r.pieces[0]?.cells.filter((c) => IS_LOG[c.state])).toHaveLength(logs - 1);
+    expect(count(world, (s) => IS_LOG[s] === 1)).toBe(0);
+    expect(count(world, (s) => s === B.stone)).toBe(4 * 9 * 6);
   });
 
   it('fells one tree of a pair with touching crowns and leaves the other standing', () => {

@@ -222,6 +222,8 @@ export class Structure {
         }
         const s = w.get(nx, ny, nz);
         if (!HARD[s] || (n >= 6 && !LOG[s])) continue;
+        // A log holds on to terrain only by standing on it: a trunk that brushes a bank or a cliff is not fixed there.
+        if (log && n !== 3 && IS_NATURAL[s]) continue;
         // Anything solid that is ground holds the piece up, loose sand included; only structural blocks carry the search on.
         if (n < 6 && (!w.inBounds(nx, ny, nz) || isGround(w, nx, ny, nz, s))) {
           grounded[id] = true;

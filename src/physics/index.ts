@@ -196,7 +196,7 @@ export class Physics {
    */
   setPusher(x: number, y: number, z: number, halfWidth: number, height: number): void {
     this.pusher = { x, y, z };
-    this.rigid.setPusher(x, y, z, halfWidth, height);
+    this.rigid.pusher.set(x, y, z, halfWidth, height);
   }
 
   /**

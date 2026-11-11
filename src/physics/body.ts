@@ -45,6 +45,8 @@ export interface Body {
   snapRefused: boolean;
   /** Consecutive steps its centre has been inside a full block. */
   buried: number;
+  /** Step in which the player's body last shoved it, so several of its colliders touching the player count once. */
+  pushedAt: number;
   /** Seconds since creation. */
   age: number;
   /** Creation order, for oldest-first budgets. */

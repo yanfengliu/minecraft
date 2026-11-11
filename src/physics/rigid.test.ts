@@ -215,26 +215,29 @@ describe('rigid bodies', () => {
     physics.dispose();
   });
 
-  it('lets the player shove an item but not a boulder', async () => {
+  it('lets the player shove aside what lies in the way, light or heavy', async () => {
     const { physics } = await setup({ settleTime: NEVER });
-    const crate = view(physics, physics.spawnItem(item('bread').id, 1, 20.5, TOP + 0.2, 20.5));
+    const loaf = view(physics, physics.spawnItem(item('bread').id, 1, 20.5, TOP + 0.2, 20.5));
     const rock = view(physics, physics.spawnBlock(B.stone, 20.5, TOP + 0.5, 24.5));
+    const far = view(physics, physics.spawnBlock(B.stone, 20.5, TOP + 0.5, 30.5));
     run(physics, 1);
-    // Walk through both at 3 m/s, from -x.
-    for (let i = 0; i < 120; i++) {
-      const px = 17.5 + i * 3 * RIGID_DT;
-      physics.setPusher(px, TOP, 20.5, 0.3, 1.8);
-      physics.step(RIGID_DT);
+    expect(rock.sleeping).toBe(true);
+    // Walk 6 m in a straight line through each at 3 m/s, from -x; the third block is nowhere near.
+    let px = 0;
+    for (const z of [20.5, 24.5]) {
+      for (let i = 0; i < 120; i++) {
+        px = 17.5 + i * 3 * RIGID_DT;
+        physics.setPusher(px, TOP, z, 0.3, 1.8);
+        physics.step(RIGID_DT);
+      }
     }
-    const moved = crate.x - 20.5;
-    for (let i = 0; i < 120; i++) {
-      const px = 17.5 + i * 3 * RIGID_DT;
-      physics.setPusher(px, TOP, 24.5, 0.3, 1.8);
-      physics.step(RIGID_DT);
-    }
-    expect(moved).toBeGreaterThan(1);
-    expect(rock.x - 20.5).toBeLessThan(0.4);
-    console.log(`rigid push: walking through at 3 m/s moved the item ${moved.toFixed(2)} m and the 2600 kg stone ${(rock.x - 20.5).toFixed(3)} m`);
+    // Neither is left inside the player: both were pushed along ahead.
+    expect(loaf.x).toBeGreaterThan(px);
+    expect(rock.x - 0.5).toBeGreaterThan(px);
+    expect(far.x).toBeCloseTo(20.5, 4);
+    expect(far.sleeping).toBe(true);
+    run(physics, 2);
+    console.log(`rigid push: walking 6 m through them at 3 m/s moved the item ${(loaf.x - 20.5).toFixed(2)} m and the 2600 kg stone ${(rock.x - 20.5).toFixed(2)} m`);
     physics.dispose();
   });
 

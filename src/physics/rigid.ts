@@ -10,6 +10,7 @@ import { buoyancySamples, cellBounds, dominantMaterial, type Body } from './body
 import type { Fluid } from './fluid';
 import { breakOnImpact } from './fracture';
 import { ITEM_HALF, despawnOldItems, itemMaterial, mergeItems } from './items';
+import { Pusher } from './pusher';
 import { enforceBudget, trySettle } from './settle';
 import { SOLID_VOLUME, VOXEL_MASK, mergeCells } from './shapes';
 import type { DetachedCell } from './structure';
@@ -33,8 +34,6 @@ const TERRAIN_MARGIN = 1.5;
 const TERRAIN_LOOKAHEAD = 0.1;
 /** A body that leaves the island or falls out of the bottom of the world is forgotten. */
 const WORLD_MARGIN = 8;
-/** The most the player's body can push with, in newtons: enough to shove a crate, not a boulder. */
-const PUSH_FORCE = 900;
 const SETTLES_PER_STEP = 4;
 /** No body moves faster than this, m/s: two thirds of a block per step. */
 const MAX_SPEED = 40;
@@ -53,6 +52,8 @@ export class RigidBodies {
   readonly terrain: TerrainColliders;
   readonly bodies: Body[] = [];
   readonly water: WaterContext;
+  /** The player's body, which shoves bodies aside. */
+  readonly pusher = new Pusher();
   /** Bodies awake after the last step. */
   awake = 0;
   readonly maxBodies: number;
@@ -65,12 +66,9 @@ export class RigidBodies {
   private born = 0;
   private steps = 0;
   private anyDead = false;
-  // The player's body: feet position, size, velocity, and how many steps the last report is still good for.
-  private readonly pusher = { x: 0, y: 0, z: 0, half: 0.3, height: 1.8, vx: 0, vz: 0, live: 0, fresh: false };
   private readonly t = { x: 0, y: 0, z: 0 };
   private readonly q = { x: 0, y: 0, z: 0, w: 1 };
   private readonly v = { x: 0, y: 0, z: 0 };
-  private readonly j = { x: 0, y: 0, z: 0 };
   private readonly c = { x: 0, y: 0, z: 0 };
 
   /** Load the physics library. Must have resolved before the first instance is made. */
@@ -141,9 +139,11 @@ export class RigidBodies {
       view, rb, kind, cells, material: 0, mass: 1, volume: 1,
       min: [0, 0, 0], max: [0, 0, 0], radius: 1, com: [0, 0, 0], samples: new Float32Array(0),
       wet: 0, inWater: false, dry: 1, angDamp: 0, vx: vel.x, vy: vel.y, vz: vel.z,
-      quiet: 1, asleep: 0, snapRefused: false, buried: 0, age: 0, born: this.born++, tree: opts.tree === true,
+      quiet: 1, asleep: 0, snapRefused: false, buried: 0, pushedAt: -1, age: 0, born: this.born++, tree: opts.tree === true,
       range: new Int32Array(6).fill(-1), dead: false,
     };
+    // So a collider found by a query leads back to this record.
+    rb.userData = body;
     this.fit(body);
     this.bodies.push(body);
     this.host.addView(view);
@@ -228,33 +228,9 @@ export class RigidBodies {
     this.terrain.onBlockChanged(x, y, z, old, state);
   }
 
-  /** Where the player's body is. Call once per `step`; it stops pushing a little after the calls stop. */
-  setPusher(x: number, y: number, z: number, halfWidth: number, height: number): void {
-    const p = this.pusher;
-    if (p.live > 0) {
-      // Velocity from the move since the last report; a jump of several blocks is a teleport, not a shove.
-      const dx = x - p.x;
-      const dz = z - p.z;
-      const far = Math.hypot(dx, dz) > 3;
-      p.vx = far ? 0 : dx;
-      p.vz = far ? 0 : dz;
-      p.fresh = true;
-    } else {
-      p.vx = 0;
-      p.vz = 0;
-    }
-    p.x = x;
-    p.y = y;
-    p.z = z;
-    p.half = halfWidth;
-    p.height = height;
-    p.live = 30;
-  }
-
   /** True when the player's body overlaps this cell. */
   pusherIn(x: number, y: number, z: number): boolean {
-    const p = this.pusher;
-    return p.live > 0 && x + 1 > p.x - p.half && x < p.x + p.half && z + 1 > p.z - p.half && z < p.z + p.half && y + 1 > p.y && y < p.y + p.height;
+    return this.pusher.contains(x, y, z);
   }
 
   /** The fluid has ticked: wake sleepers whose water rose or drained away. */
@@ -274,7 +250,7 @@ export class RigidBodies {
     // Bodies removed between steps (picked up, say) are still listed: drop them before anything touches their handles.
     this.compact();
     this.terrain.flush(this.wakeNear);
-    this.push(dt);
+    this.pusher.apply(this, this.steps, dt);
     for (const b of this.bodies) {
       if (b.dead || b.view.sleeping) continue;
       this.needTerrain(b);
@@ -474,7 +450,7 @@ export class RigidBodies {
   }
 
   /** World position of a body's centre of mass at the pose in its view. The result is scratch: use it before the next call. */
-  private centre(b: Body): { x: number; y: number; z: number } {
+  centre(b: Body): { x: number; y: number; z: number } {
     const { x, y, z, qx, qy, qz, qw } = b.view;
     const lx = b.com[0];
     const ly = b.com[1];
@@ -510,38 +486,5 @@ export class RigidBodies {
       return;
     }
     this.remove(b);
-  }
-
-  /** The player's body shoves aside what it overlaps, with limited force. */
-  private push(dt: number): void {
-    const p = this.pusher;
-    if (p.live <= 0) return;
-    p.live--;
-    // The reported move happened over one outer step; spread as a velocity over the substeps until the next report.
-    const pvx = p.fresh ? p.vx / dt : 0;
-    const pvz = p.fresh ? p.vz / dt : 0;
-    p.fresh = false;
-    const cy = p.y + p.height / 2;
-    for (const b of this.bodies) {
-      if (b.dead) continue;
-      const v = b.view;
-      const reach = Math.min(b.radius, 1) + p.half;
-      const dx = v.x - p.x;
-      const dz = v.z - p.z;
-      if (Math.abs(dx) > reach || Math.abs(dz) > reach || Math.abs(v.y - cy) > p.height / 2 + Math.min(b.radius, 1)) continue;
-      const d = Math.hypot(dx, dz);
-      const nx = d > 1e-3 ? dx / d : 1;
-      const nz = d > 1e-3 ? dz / d : 0;
-      // Enough to move it out of the way at the player's own pace and a little more, capped by what a person can push.
-      const closing = (pvx - b.vx) * nx + (pvz - b.vz) * nz + 0.6;
-      if (closing <= 0) continue;
-      const jn = Math.min(b.mass * closing, PUSH_FORCE * dt);
-      this.j.x = nx * jn;
-      this.j.y = 0;
-      this.j.z = nz * jn;
-      b.rb.applyImpulse(this.j, true);
-      b.vx += this.j.x / b.mass;
-      b.vz += this.j.z / b.mass;
-    }
   }
 }
