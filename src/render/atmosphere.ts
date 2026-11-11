@@ -26,11 +26,14 @@ const MULTI = 0.65;
 export const SUN_INTENSITY = 22;
 /** Moonlight relative to sunlight at full moon. Far brighter than reality so nights stay readable. */
 export const MOON_RATIO = 0.03;
+/** Radiance of the twilight dome at the zenith per unit of `twilight()`. The ambient light uses the same colour. */
+export const TWILIGHT_DOME: readonly [number, number, number] = [0.16, 0.19, 0.3];
 
 const f = (v: number): string => (Number.isInteger(v) ? `${v}.0` : `${v}`);
 const v3 = (v: Vec3): string => `vec3(${f(v.x)}, ${f(v.y)}, ${f(v.z)})`;
 
 export const ATMOSPHERE_GLSL = /* glsl */ `
+const vec3 TWILIGHT_DOME = vec3(${TWILIGHT_DOME.map(f).join(', ')});
 const float R_GROUND = ${f(R_GROUND)};
 const float R_TOP = ${f(R_TOP)};
 const vec3 RAYLEIGH = ${v3(RAYLEIGH)};
@@ -108,7 +111,32 @@ vec2 skyLutUV(vec3 d) {
   float el = asin(clamp(d.y, -1.0, 1.0));
   return vec2(az / TAU, 0.5 + 0.5 * sign(el) * sqrt(abs(el) / (PI * 0.5)));
 }
+// Twilight: see twilight() on the CPU side, which this mirrors.
+float twilight(float sunY) {
+  return 0.42 * exp(-pow(max(0.06 - sunY, 0.0) * 9.5, 1.6)) * (1.0 - smoothstep(0.02, 0.22, sunY));
+}
+// What twilight adds to the sky in a direction: a blue dome, and a warm band low toward where the sun went down.
+vec3 twilightSky(vec3 rd, vec3 sunDir) {
+  float tw = twilight(sunDir.y);
+  float toward = dot(normalize(rd.xz + vec2(1e-5)), normalize(sunDir.xz + vec2(1e-5))) * 0.5 + 0.5;
+  float low = pow(1.0 - clamp(rd.y, 0.0, 1.0), 5.0);
+  vec3 dome = TWILIGHT_DOME * (0.55 + 0.45 * clamp(rd.y, 0.0, 1.0));
+  vec3 band = vec3(1.25, 0.5, 0.17) * low * pow(toward, 3.0) + vec3(0.36, 0.2, 0.26) * low * 0.4;
+  return (dome + band) * tw;
+}
 `;
+
+/**
+ * How much glow the sky keeps around sunset and sunrise, by the height of the
+ * sun (the y of its direction): 0 by day, about 0.4 with the sun on the
+ * horizon, fading through dusk to nothing in full night. The atmosphere above
+ * is single scattering, which gives out as soon as the sun is low; the real
+ * sky stays lit by light scattered more than once, and this stands in for it.
+ */
+export function twilight(sunY: number): number {
+  const t = Math.min(Math.max((sunY - 0.02) / 0.2, 0), 1);
+  return 0.42 * Math.exp(-Math.pow(Math.max(0.06 - sunY, 0) * 9.5, 1.6)) * (1 - t * t * (3 - 2 * t));
+}
 
 // ---------------------------------------------------------------------------
 // CPU side

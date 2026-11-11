@@ -6,7 +6,7 @@ import { type Vec3, damp, lerp, saturate, smoothstep } from '../core/math';
 import type { Clock } from '../sim/clock';
 import { moonDirection, moonIllumination, sunDirection } from '../sim/sky';
 import type { WeatherView } from '../sim/weather';
-import { MOON_RATIO, SUN_INTENSITY, domeRadiance, transmittanceTo } from './atmosphere';
+import { MOON_RATIO, SUN_INTENSITY, TWILIGHT_DOME, domeRadiance, transmittanceTo, twilight } from './atmosphere';
 
 type Rgb3 = [number, number, number];
 
@@ -96,9 +96,13 @@ export class Environment {
     // from every side: thick fog has no shadows, thin mist only softens them.
     const fogThrough = Math.exp((-(this.fogDensity - 0.00009) * FOG_DEPTH) / Math.max(body.y, 0.12));
     const above = (useSun ? SUN_INTENSITY * sunUp : this.moonIntensity * moonUp) * directThrough;
-    const strength = above * fogThrough;
+    // On the horizon a light is dimmer than the clear air's transmittance alone says: the haze lies thickest there.
+    const strength = above * fogThrough * Math.pow(smoothstep(-0.02, 0.12, body.y), 0.7);
     this.keyDir = body.y > 0.02 ? body : normalizeUp(body);
-    this.keyColor = [(strength * T.x) / Math.PI, (strength * T.y) / Math.PI, (strength * T.z) / Math.PI];
+    // Extinction alone leaves a setting sun pure red. What reaches the ground is orange, because the
+    // bright sky round the sun lights it too; keep at least that much green and blue.
+    const kr = (strength * T.x) / Math.PI;
+    this.keyColor = [kr, Math.max((strength * T.y) / Math.PI, kr * 0.42), Math.max((strength * T.z) / Math.PI, kr * 0.16)];
     // Shadows fade out as their light grazes the horizon, which also hides the hand-over between sun and moon.
     this.shadowStrength = smoothstep(0.015, 0.1, body.y);
 
@@ -123,6 +127,11 @@ export class Environment {
     ar += fogFill * T.x;
     ag += fogFill * T.y;
     ab += fogFill * T.z;
+    // Dusk and dawn: the sky goes on lighting the ground after the sun has stopped (see twilight()).
+    const dusk = twilight(sun.y) * (1 - 0.5 * cover) * AMBIENT_BOOST;
+    ar += TWILIGHT_DOME[0] * dusk;
+    ag += TWILIGHT_DOME[1] * dusk;
+    ab += TWILIGHT_DOME[2] * dusk;
     this.ambientSky = [ar + 0.0012, ag + 0.0016, ab + 0.0026];
 
     // Sunlit ground throws warm light back up under eaves and onto shaded walls.

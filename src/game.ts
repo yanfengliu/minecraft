@@ -2,22 +2,24 @@
 
 import { clamp } from './core/math';
 import { Rng, rand3 } from './core/rng';
+import { Life } from './life';
 import type { Physics, PhysicsEvent } from './physics';
 import { Input } from './player/input';
 import { Interaction, REACH } from './player/interaction';
 import { Inventory } from './player/inventory';
 import { Player } from './player/player';
+import { Trade } from './player/trade';
 import { BodyDrawer } from './render/bodies';
 import { Environment } from './render/environment';
 import { MeshPool } from './render/meshPool';
 import { Particles } from './render/particles';
 import { type Camera, type FrameInfo, Renderer } from './render/renderer';
-import { type AnimState, ENTITY_KINDS, type EntityKind, type EntityView, type InspectInfo, type VillagePlan } from './sim/api';
+import { type AnimState, ENTITY_KINDS, type EntityKind, type EntityView, type InspectInfo, type VillagePlan, createBasicActions } from './sim/api';
 import { Clock, SIM_DT } from './sim/clock';
 import { type Regime, Weather } from './sim/weather';
 import { Hud } from './ui/hud';
 import { watchAttachments } from './world/attach';
-import { BLOCKS, IS_LEAVES } from './world/blocks';
+import { BLOCKS, IS_LEAVES, IS_LOG } from './world/blocks';
 import type { IslandInfo } from './world/gen/island';
 import { DEFAULT_ISLAND, type IslandConfig } from './world/gen/terrain';
 import { dropOf } from './world/items';
@@ -48,6 +50,8 @@ const DUST: readonly (readonly [number, number, number])[] = [
   [0.4, 0.4, 0.4], [0.42, 0.42, 0.42], [0.3, 0.22, 0.14], [0.6, 0.52, 0.34], [0.4, 0.39, 0.37], [0.4, 0.28, 0.15], [0.2, 0.36, 0.12], [0.22, 0.38, 0.14],
   [0.7, 0.68, 0.62], [0.7, 0.8, 0.82], [0.45, 0.46, 0.48], [0.6, 0.5, 0.2], [0.45, 0.24, 0.17], [0.6, 0.72, 0.8], [0.9, 0.92, 0.95], [0.5, 0.36, 0.27],
 ];
+/** Simulation steps one frame may run: 4 simulated seconds, enough for 120x time-lapse at 30 frames a second. */
+const MAX_STEPS_PER_FRAME = 40;
 /** How far from the player's middle a dropped item is picked up, in metres. */
 const PICKUP_RADIUS = 1.45;
 /** Seconds of holding the button on a piece of rubble before it breaks into its blocks. */
@@ -80,6 +84,10 @@ export class Game {
   readonly interaction = new Interaction();
   readonly particles = new Particles();
   readonly physics: Physics;
+  /** The village and the wildlife. */
+  readonly life: Life;
+  /** The player's dealings with the village; null where there is none. */
+  readonly trade: Trade | null;
   readonly camera: Camera;
   readonly hud: Hud;
   /** Simulated seconds per real second. */
@@ -106,6 +114,8 @@ export class Game {
   /** Seconds before items are picked up again, after a pick-up that did not fit in the pack. */
   private pickupWait = 0;
   private drops = 0;
+  /** What villagers have said to the player and until when (in `elapsed` seconds) it stays above their heads. */
+  private readonly said = new Map<number, { text: string; until: number }>();
   /** 1 at the moment of a blow or a placement, falling to 0: swings the held item. */
   private swing = 0;
   /** Metres walked, for the sway of the held item. */
@@ -129,8 +139,36 @@ export class Game {
     const workers = clamp((navigator.hardwareConcurrency || 4) - 2, 2, 8);
     this.pool = new MeshPool(this.world, (section, mesh) => this.renderer.setMesh(section, mesh), workers);
     this.clock = new Clock(9);
-    this.weather = new Weather(new Rng(gen.info.config.seed ^ 0x5eed).fork('weather'), this.clock);
+    const rng = new Rng(gen.info.config.seed ^ 0x5eed);
+    this.weather = new Weather(rng.fork('weather'), this.clock);
     this.weather.lightning.on((s) => this.env.strike(s.intensity));
+    const near = (x: number, z: number): boolean => (x - this.camera.x) ** 2 + (z - this.camera.z) ** 2 < 90 * 90;
+    const basic = createBasicActions(this.world);
+    this.life = new Life(this.world, this.clock, this.weather, rng.fork('life'), this.plan, {
+      // A woodcutter's tree is taken away whole and counted once: he is paid in logs for what he fells,
+      // and a trunk left lying as blocks as well would be the same wood twice. (A tree the player cuts
+      // falls for real: see section 10 of the design.) The crown goes in a shower of leaves.
+      fellTree: (x, y, z) => {
+        let top = y;
+        while ((IS_LOG[this.world.get(x, top + 1, z)] as number) === 1) top++;
+        const leaf = this.world.get(x, top + 1, z);
+        const logs = basic.fellTree(x, y, z);
+        if (logs > 0 && near(x, z)) {
+          this.particles.burst('leaves', x + 0.5, top + 0.5, z + 0.5, this.colorOf(leaf), 4);
+          this.particles.burst('dust', x + 0.5, y + 0.3, z + 0.5, DUST[5], 1.5);
+        }
+        return logs;
+      },
+      // Only what happens near enough to be seen is worth a particle.
+      effect: (kind, x, y, z) => {
+        if (near(x, z)) this.particles.burst(kind, x, y, z);
+      },
+    });
+    const village = this.life.village;
+    this.trade = village ? new Trade(village, this.inventory, (item, count) => {
+      physics.spawnItem(item, count, this.player.x, this.player.y + 1, this.player.z);
+    }) : null;
+    this.renderer.entities.tradeOf = (role) => village?.professions[role] ?? '';
     this.input = new Input(canvas);
     const s = gen.info.spawn;
     this.player = new Player(s.x, s.y, s.z);
@@ -266,12 +304,30 @@ export class Game {
   /** What the inspector card shows for a creature. */
   inspect(id: number): InspectInfo | null {
     const v = this.lineUp.find((q) => q.id === id);
-    return v ? { title: v.kind, subtitle: `in the line-up, ${v.anim}`, lines: [], bars: [] } : null;
+    return v ? { title: v.kind, subtitle: `in the line-up, ${v.anim}`, lines: [], bars: [] } : this.life.inspect(id);
   }
 
   /** The line under the crosshair when a creature is in focus. */
   focusPrompt(): string {
-    return '';
+    const who = this.focus;
+    const village = this.life.village;
+    if (!who || !village || (who.kind !== 'villager' && who.kind !== 'child')) return '';
+    return village.canTrade(who.id) ? 'Right-click to trade' : 'Right-click to talk';
+  }
+
+  /** Right-click on a villager: trade if they are serving, otherwise pass the time of day. Returns whether there was anyone to greet. */
+  private greet(): boolean {
+    const who = this.focus;
+    const village = this.life.village;
+    if (!who || !village || (who.kind !== 'villager' && who.kind !== 'child')) return false;
+    if (this.trade && village.canTrade(who.id)) {
+      this.trade.begin(who.id);
+      this.hud.show('trade');
+    } else {
+      const line = village.talk(who.id);
+      if (line) this.said.set(who.id, { text: line, until: this.elapsed + 4.5 });
+    }
+    return true;
   }
 
   /** What is being said, and by whom, near the player. */
@@ -279,11 +335,15 @@ export class Game {
     const out: Speech[] = [];
     const p = this.player;
     for (const v of this.seen) {
-      if (!v.bubble) continue;
+      // What a villager says to the player takes the place of whatever they were saying to each other.
+      const reply = this.said.get(v.id);
+      if (reply && reply.until < this.elapsed) this.said.delete(v.id);
+      const text = reply && reply.until >= this.elapsed ? reply.text : v.bubble;
+      if (!text) continue;
       const d2 = (v.x - p.x) ** 2 + (v.z - p.z) ** 2;
       if (d2 > 28 * 28) continue;
       const at = this.renderer.entities.drawn(v.id) ?? v;
-      out.push({ x: at.x, y: at.y + HEIGHT[v.kind] * v.scale + 0.35, z: at.z, text: v.bubble, kind: 'bubble' });
+      out.push({ x: at.x, y: at.y + HEIGHT[v.kind] * v.scale + 0.35, z: at.z, text, kind: 'bubble' });
       if (out.length >= 14) break;
     }
     return out;
@@ -305,18 +365,26 @@ export class Game {
 
   private update(dt: number): void {
     this.elapsed += dt;
-    // Simulation steps: fixed size, as many as the time scale calls for, bounded so a hitch cannot snowball.
+    const p = this.player;
+    const who = this.life.player;
+    who.x = p.x;
+    who.y = p.y;
+    who.z = p.z;
+    // Simulation steps: fixed size, as many as the time scale calls for.
     if (!this.paused) {
       this.simDebt += dt * this.timeScale;
-      let steps = Math.min(Math.floor(this.simDebt / SIM_DT), 2400);
-      this.simDebt -= steps * SIM_DT;
+      const due = Math.floor(this.simDebt / SIM_DT);
+      // A frame runs at most this many steps: if the simulations cannot keep up with the time-lapse
+      // asked for, time runs a little slower instead of the frame rate collapsing.
+      let steps = Math.min(due, MAX_STEPS_PER_FRAME);
+      this.simDebt = due > MAX_STEPS_PER_FRAME ? 0 : this.simDebt - steps * SIM_DT;
       while (steps-- > 0) {
         this.clock.advance(SIM_DT);
         this.weather.update(SIM_DT);
+        this.life.tick();
       }
     }
 
-    const p = this.player;
     p.update(dt, this.input, this.world, (x, y, z) => this.physics.flowAt(x, y, z));
     // Rubble that came to rest out of square is a body, not a block, and the block ray cannot see it:
     // whichever of the two the crosshair meets first is the one the player is working on.
@@ -332,6 +400,7 @@ export class Game {
       placed: () => {
         this.swing = 1;
       },
+      use: () => this.greet(),
     }, body ? body.distance : REACH);
     if (body && !this.interaction.target && this.input.buttons.has(0)) {
       if (this.rubble.id !== body.id) this.rubble = { id: body.id, held: 0 };
@@ -370,6 +439,7 @@ export class Game {
       v.animTime += dt;
       this.seen.push(v);
     }
+    this.life.collect(this.seen);
     this.focus = this.pick(t ? t.t : 6.5);
 
     const eye = this.player.eye;

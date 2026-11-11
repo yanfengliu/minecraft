@@ -21,7 +21,18 @@ declare global {
         fps: number;
         stop(): void;
         world: { get(x: number, y: number, z: number): number; set(x: number, y: number, z: number, state: number): boolean };
-        renderer: { settings: { ssao: boolean; shafts: boolean; bloom: boolean; fxaa: boolean } };
+        renderer: { settings: { ssao: boolean; shafts: boolean; bloom: boolean; fxaa: boolean }; entities: { count: number } };
+        focusPrompt(): string;
+        life: {
+          village: {
+            people: readonly { id: number; x: number; z: number; anim: string }[];
+            stats: { teleports: number; pathFails: number };
+          } | null;
+          eco: {
+            views: readonly { id: number; x: number; z: number; kind: string }[];
+            census(): { kind: string; count: number }[];
+          };
+        };
         inventory: { count(item: number): number };
         physics: {
           spawnBlock(state: number, x: number, y: number, z: number): number;

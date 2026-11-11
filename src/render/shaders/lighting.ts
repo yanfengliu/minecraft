@@ -277,6 +277,8 @@ void main() {
   vec3 through;
   vec3 c = scatterFrom(rd, uSunDir.xyz, through) * uSunIntensity;
   if (uMoonIntensity > 0.0) c += scatterFrom(rd, uMoonDir.xyz, through) * uMoonIntensity;
+  // Dusk and dawn: the glow single scattering cannot give (see twilight() in atmosphere.ts).
+  c += twilightSky(rd, uSunDir.xyz);
   // Starlight and airglow: the sky is never fully black.
   c += vec3(0.0008, 0.0011, 0.002) * (0.4 + 0.6 * saturate(rd.y + 0.2)) * uGrassTint.a;
   // Overcast flattens the sky toward the grey underside of the cloud deck.

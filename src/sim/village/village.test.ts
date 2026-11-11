@@ -69,7 +69,7 @@ describe('village facade', () => {
     expect(info.lines.some((l) => l.startsWith('Purse: '))).toBe(true);
     expect(info.lines.some((l) => l.startsWith('Home: '))).toBe(true);
     expect(info.lines.some((l) => l.startsWith('Works at: The Bakehouse'))).toBe(true);
-    expect(info.bars.map((b) => b.label)).toEqual(['Hunger', 'Energy', 'Social', 'Mood']);
+    expect(info.bars.map((b) => b.label)).toEqual(['Fed', 'Energy', 'Social', 'Mood']);
     for (const bar of info.bars) {
       expect(bar.value).toBeGreaterThanOrEqual(0);
       expect(bar.value).toBeLessThanOrEqual(1);

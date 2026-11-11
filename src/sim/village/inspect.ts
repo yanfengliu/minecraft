@@ -23,9 +23,9 @@ export function inspectResident(core: Core, social: Social, r: Resident): Inspec
     title: r.name,
     subtitle,
     lines,
-    // Every bar reads the same way: full is good. "Hunger" full means well fed.
+    // Every bar reads the same way: full is good.
     bars: [
-      { label: 'Hunger', value: 1 - needs.hunger },
+      { label: 'Fed', value: 1 - needs.hunger },
       { label: 'Energy', value: needs.energy },
       { label: 'Social', value: needs.social },
       { label: 'Mood', value: needs.mood },

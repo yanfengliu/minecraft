@@ -9,6 +9,7 @@ import type { InspectInfo } from '../sim/api';
 import { REGIMES } from '../sim/weather';
 import { ITEMS } from '../world/items';
 import { Icons } from './icons';
+import { ledgerPanel, tradePanel, wildlifePanel } from './panels';
 
 export interface Panel {
   title: string;
@@ -52,7 +53,7 @@ export class Hud {
     };
     for (const name of ['crosshair', 'status', 'purse', 'hint', 'debug', 'prompt', 'held', 'inspector', 'layer', 'hotbar', 'panel']) this.el[name] = make(name);
     for (let i = 0; i < HOTBAR; i++) this.slots.push(make('slot', this.el.hotbar));
-    (this.el.hint as HTMLElement).textContent = 'E pack · T almanac · H help · F fly · [ ] time';
+    (this.el.hint as HTMLElement).textContent = 'E pack · L ledger · K wildlife · T almanac · H help · F fly · [ ] time';
     (this.el.inspector as HTMLElement).style.display = 'none';
     (this.el.panel as HTMLElement).style.display = 'none';
     (this.el.panel as HTMLElement).addEventListener('click', (e) => this.click(e));
@@ -60,6 +61,10 @@ export class Hud {
     this.addPanel('KeyE', 'pack', this.packPanel());
     this.addPanel('KeyT', 'almanac', this.almanacPanel());
     this.addPanel('KeyH', 'help', this.helpPanel());
+    this.addPanel('KeyL', 'ledger', ledgerPanel(game, this.icons));
+    this.addPanel('KeyK', 'wildlife', wildlifePanel(game));
+    // No key for trade: it opens when the player right-clicks someone serving at a counter or stall.
+    this.panels.set('trade', tradePanel(game, this.icons));
   }
 
   addPanel(key: string, name: string, panel: Panel): void {
@@ -69,6 +74,7 @@ export class Hud {
 
   /** Open a panel by name, or close whatever is open with null. */
   show(name: string | null): void {
+    if (this.open === 'trade' && name !== 'trade') this.game.trade?.end();
     this.open = name;
     this.picked = -1;
     const el = this.el.panel as HTMLElement;

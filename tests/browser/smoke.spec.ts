@@ -313,5 +313,43 @@ test('the full island holds a village and still fits the frame budget', async ({
   const pixels = await page.evaluate(() => window.__tidewick!.probe(16, 9));
   const ground = rowMean(pixels, 8, 16);
   expect(ground[0] + ground[1] + ground[2]).toBeGreaterThan(60);
+
+  // The island is lived in: people and wild animals exist, are drawn, and go about on their own.
+  const life = await page.evaluate(() => {
+    const t = window.__tidewick!;
+    const g = t.game!;
+    const village = g.life.village!;
+    const where = (list: readonly { id: number; x: number; z: number }[]): Map<number, [number, number]> => new Map(list.map((v) => [v.id, [v.x, v.z]]));
+    const moved = (list: readonly { id: number; x: number; z: number }[], from: Map<number, [number, number]>): number =>
+      list.filter((v) => { const a = from.get(v.id); return a !== undefined && Math.hypot(v.x - a[0], v.z - a[1]) > 1.5; }).length;
+    t.setHour(9.5);
+    t.setTimeScale(5);
+    t.step(1);
+    const people0 = where(village.people);
+    const wild0 = where(g.life.eco.views);
+    // Half a game hour: long enough for errands to be run and herds to drift.
+    t.step(6);
+    t.setTimeScale(1);
+    const census = Object.fromEntries(g.life.eco.census().map((r) => [r.kind, r.count]));
+    return {
+      people: village.people.length,
+      peopleMoved: moved(village.people, people0),
+      teleports: village.stats.teleports,
+      wild: g.life.eco.views.length,
+      wildMoved: moved(g.life.eco.views, wild0),
+      census,
+      boxes: g.renderer.entities.count,
+      prompt: typeof g.focusPrompt(),
+    };
+  });
+  console.log('life', JSON.stringify(life));
+  expect(life.people).toBeGreaterThanOrEqual(40);
+  expect(life.peopleMoved).toBeGreaterThanOrEqual(8);
+  expect(life.teleports).toBe(0);
+  expect(life.wild).toBeGreaterThanOrEqual(150);
+  expect(life.wildMoved).toBeGreaterThanOrEqual(20);
+  for (const kind of ['deer', 'rabbit', 'boar', 'fox', 'wolf', 'songbird', 'crow', 'gull', 'duck', 'fish']) expect(life.census[kind], kind).toBeGreaterThan(0);
+  // Looking down the street at half past nine there are people in view, each a dozen boxes or so.
+  expect(life.boxes).toBeGreaterThan(60);
   expect(errors).toEqual([]);
 });
