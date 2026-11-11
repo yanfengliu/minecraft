@@ -2,13 +2,13 @@
 // its body away, pairing a couple and delivering the litter. Every count the
 // census reports is kept here, as the events happen.
 
-import { lerp } from '../../core/math';
-import { DAY_SECONDS } from '../clock';
+import { lerp, mod } from '../../core/math';
+import { DAYS_PER_SEASON, DAY_SECONDS } from '../clock';
 import { halt } from './motion';
 import { FISH, GT_BAND, GT_WARREN, type Species, bit } from './species';
 import type { Eco } from './state';
 import { airFloor } from './terrain';
-import { Animal, CAUSES, Group, MODE_FLY, MODE_STILL, ST_COURT, ST_DEAD, ST_FLEE, WHY_BREED } from './types';
+import { Animal, CAUSES, DIED_AGE, Group, MODE_FLY, MODE_STILL, ST_COURT, ST_DEAD, ST_FLEE, ST_HIDE, WHY_BREED } from './types';
 
 /** Seconds a body lies where it fell when nothing is eating it. */
 const CARCASS = 30;
@@ -16,6 +16,23 @@ const CARCASS = 30;
 const COURT_EVERY = 240;
 /** How far a male will come to join a group that has none. */
 const SUITOR_REACH = 130;
+/** A female carries her young for between this much and this much of her species' gestation. */
+const CARRY_LEAST = 0.9;
+const CARRY_MOST = 1.15;
+/** Seconds a birth may run late: she delivers at her next thought, and a bird not until it has landed. */
+const BIRTH_SLACK = 200;
+
+/**
+ * An animal is old past this share of its span: it has about a year left at
+ * most (a wolf) or a season (a rabbit), is no longer counted among those who
+ * will carry the species on, and gives way to the young.
+ */
+const ELDER = 0.8;
+
+/** The season (0 spring to 3 winter) that a moment of simulated time falls in. */
+function seasonAt(time: number): number {
+  return mod(Math.floor(time / (DAYS_PER_SEASON * DAY_SECONDS)), 4);
+}
 
 export function addGroup(e: Eco, sp: Species): Group {
   const g = new Group(e.nextGroup++, sp);
@@ -34,6 +51,8 @@ export function addAnimal(e: Eco, sp: Species, g: Group, ageDays: number, female
   a.born = e.now - ageDays * DAY_SECONDS;
   a.lifespan = sp.lifespan * DAY_SECONDS * e.rng.range(0.85, 1.12);
   a.size = e.rng.range(0.94, 1.06);
+  // Constitution, 0.6 to 1.4, read off the bits of `look` the renderer makes least use of rather than drawn afresh.
+  a.grit = 0.6 + (0.8 * (a.look >>> 12)) / 0xfffff;
   a.hunger = e.rng.range(0.1, 0.4);
   a.energy = e.rng.range(0.7, 1);
   a.cruise = e.rng.range(0.7, 1.3);
@@ -68,6 +87,7 @@ export function kill(e: Eco, a: Animal, cause: number, carcass = CARCASS): void 
   if (a.mode === MODE_FLY) a.y = airFloor(e.world, a.cx, a.cz);
   halt(a);
   a.alive = false;
+  a.hidden = false;
   a.state = ST_DEAD;
   a.anim = 'dead';
   a.mode = MODE_STILL;
@@ -121,11 +141,16 @@ export function readyFemale(e: Eco, g: Group): Animal | null {
   const sp = g.sp;
   const k = sp.index;
   const now = e.now;
-  if (!sp.breed[e.season] || now < g.nextCourt) return null;
+  if (now < g.nextCourt) return null;
+  // The young come in their season, so the courting runs a gestation ahead of it: it begins while the season
+  // before is ending and stops when a litter could no longer be born in time.
+  const carry = sp.gestation * DAY_SECONDS;
+  if (!sp.breed[seasonAt(now + carry * CARRY_LEAST)] || !sp.breed[seasonAt(now + carry * CARRY_MOST + BIRTH_SLACK)]) return null;
   // One chance every few hours, and it may not take: a group's young arrive over days, not all at once.
   g.nextCourt = now + COURT_EVERY;
   if (!e.rng.chance(sp.fertility)) return null;
-  if ((e.count[k] as number) + (e.awayCount[k] as number) >= (e.cap[k] as number)) return null;
+  // No room for more, unless one of them is old enough to make way for the young when they come.
+  if ((e.count[k] as number) + (e.awayCount[k] as number) >= (e.cap[k] as number) && !elder(e, k, null)) return null;
   for (const a of g.members) {
     if (!a.female || a.state === ST_FLEE || a.state === ST_COURT || a.mother || !isAdult(a, now)) continue;
     if (a.dueAt === 0 && now >= a.nextBreed && a.young === 0 && a.hunger < 0.5 && a.health > 0.6) return a;
@@ -137,12 +162,16 @@ export function readyMale(e: Eco, a: Animal): boolean {
   return a.alive && !a.female && !a.mother && a.state !== ST_FLEE && a.state !== ST_COURT && a.hunger < 0.7 && isAdult(a, e.now);
 }
 
-/** She conceives at once; the courtship that follows is for show. */
+/**
+ * She conceives at once; the courtship that follows is for show, and a rabbit
+ * down its burrow puts on none: it stays below, where nobody would see it.
+ */
 export function conceive(e: Eco, f: Animal, m: Animal): void {
   const sp = f.sp;
-  f.dueAt = e.now + sp.gestation * DAY_SECONDS * e.rng.range(0.9, 1.15);
+  f.dueAt = e.now + sp.gestation * DAY_SECONDS * e.rng.range(CARRY_LEAST, CARRY_MOST);
   f.nextBreed = f.dueAt + sp.rebreed * DAY_SECONDS;
   for (const a of [f, m]) {
+    if (a.state === ST_HIDE) continue;
     a.state = ST_COURT;
     a.why = WHY_BREED;
     a.until = e.now + 12;
@@ -188,21 +217,42 @@ export function pairUp(e: Eco, g: Group): [Animal, Animal] | null {
 }
 
 /**
- * Chance that a newborn of this species is female. Even, but leaning toward
- * whichever sex the species is short of: among four foxes or five wolves a
- * run of sons would otherwise end the line with animals to spare. In a large
- * population the lean is too slight to see.
+ * Chance that a newborn of this species is female. Even when the sexes are
+ * level, and certain for whichever sex the species is short of by a tenth of
+ * its number or more: among four foxes or five wolves a run of sons would
+ * otherwise end the line with animals to spare, and it did. Only those with
+ * life left to breed are counted, so two old vixens do not hide that every cub
+ * so far is a dog fox. In a large population the lean is slight.
  */
 function femaleOdds(e: Eco, k: number): number {
   let females = 0;
   let males = 0;
   for (const a of e.animals) {
-    if (!a.alive || a.sp.index !== k) continue;
+    if (!a.alive || a.sp.index !== k || e.now - a.born > a.lifespan * ELDER) continue;
     if (a.female) females++;
     else males++;
   }
-  const odds = 0.5 + ((males - females) / (males + females + 2)) * 0.9;
-  return odds < 0.1 ? 0.1 : odds > 0.9 ? 0.9 : odds;
+  const lean = (males - females) / Math.max(1, (males + females) * 0.1);
+  return 0.5 + 0.5 * (lean < -1 ? -1 : lean > 1 ? 1 : lean);
+}
+
+/**
+ * The oldest animal of a species that is old (past `ELDER` of its span) and
+ * has no young depending on it, or null. `not` is never the one chosen. With
+ * `within`, only that group is looked through.
+ */
+function elder(e: Eco, k: number, not: Animal | null, within: Group | null = null): Animal | null {
+  let best: Animal | null = null;
+  let most = ELDER;
+  for (const a of within ? within.members : e.animals) {
+    if (!a.alive || a.sp.index !== k || a === not || a.young > 0 || a.dueAt !== 0) continue;
+    const spent = (e.now - a.born) / a.lifespan;
+    if (spent > most) {
+      most = spent;
+      best = a;
+    }
+  }
+  return best;
 }
 
 /**
@@ -216,10 +266,26 @@ export function birth(e: Eco, mother: Animal): Animal[] {
   const g = mother.group;
   mother.dueAt = 0;
   const cap = e.cap[k] as number;
-  const have = (e.count[k] as number) + (e.awayCount[k] as number);
+  let have = (e.count[k] as number) + (e.awayCount[k] as number);
   const crowd = cap > 0 ? have / cap : 1;
   let n = Math.round(lerp(sp.litter[1], sp.litter[0], crowd) + e.rng.range(-0.5, 0.5));
-  n = Math.min(Math.max(n, sp.litter[0]), sp.litter[1], cap - have, sp.groupMax - g.members.length);
+  n = Math.min(Math.max(n, sp.litter[0]), sp.litter[1]);
+  // In a full country each of the young beyond what there is room for takes the place of the oldest of its
+  // kind, if one is old enough to go: one of the mother's own group when that is full as well, as a pack of
+  // five wolves is. A species kept at its cap with no young for years on end loses a whole generation to age
+  // together, and what is left of five wolves may then be all of one sex. (A full group in a country that has
+  // room is another matter: it divides, and nobody makes way.)
+  let fit = 0;
+  for (; fit < n; fit++) {
+    const groupFull = g.members.length + fit >= sp.groupMax;
+    const countryFull = have + fit >= cap;
+    if (!groupFull && !countryFull) continue;
+    const old = !countryFull ? null : groupFull ? elder(e, k, mother, g) : elder(e, k, mother);
+    if (!old) break;
+    kill(e, old, DIED_AGE);
+    have--;
+  }
+  n = fit;
   const out: Animal[] = [];
   for (let i = 0; i < n; i++) {
     const c = addAnimal(e, sp, g, 0, e.rng.chance(femaleOdds(e, k)));
@@ -233,6 +299,11 @@ export function birth(e: Eco, mother: Animal): Animal[] {
     c.cz = mother.cz;
     c.gy = mother.gy;
     c.perchFloor = mother.perchFloor;
+    if (mother.state === ST_HIDE) {
+      // Born below ground, and not seen until they come up with her.
+      c.state = ST_HIDE;
+      c.hidden = true;
+    }
     e.hash.insert(c);
     out.push(c);
   }

@@ -13,8 +13,8 @@ import { BOAR, GT_WARREN } from './species';
 import type { Eco } from './state';
 import {
   type Animal, GM_ALARM, GM_FEED, GM_SHELTER, GM_SLEEP, type Group, MODE_STILL, MODE_WALK, ST_COURT, ST_EAT, ST_FLEE, ST_HIDE,
-  ST_IDLE, ST_REST, ST_SEEK, ST_SLEEP, ST_TRAVEL, ST_WANDER, WHY_BAND, WHY_DAY, WHY_FED, WHY_HABIT, WHY_HUNGRY, WHY_NIGHT,
-  WHY_PERSON, WHY_RAIN, WHY_STARVING,
+  ST_IDLE, ST_REST, ST_SEEK, ST_SLEEP, ST_TRAVEL, ST_WANDER, WHY_BAND, WHY_DAY, WHY_FED, WHY_HABIT, WHY_HUNGRY, WHY_MOTHER,
+  WHY_NIGHT, WHY_NONE, WHY_PERSON, WHY_RAIN, WHY_STARVING,
 } from './types';
 
 /** How far from where the group is feeding a member will graze. */
@@ -23,6 +23,9 @@ const FEED_RANGE = 14;
 const COVER_RANGE = 7;
 /** Below this hunger an animal does not bother to eat. */
 const PECKISH = 0.12;
+/** Above this it is starving, and feeds whatever the hour and wherever it is, until its hunger is down to `FED_ENOUGH`. */
+const STARVING = 0.85;
+const FED_ENOUGH = 0.5;
 /**
  * Seconds between thoughts for an animal that is asleep, resting or in its
  * burrow, and for one that is walking somewhere. They can be long because
@@ -45,6 +48,7 @@ function seatZ(a: Animal): number {
 function enterBurrow(e: Eco, a: Animal, seconds: number): void {
   if (a.mode !== MODE_STILL) halt(a);
   a.state = ST_HIDE;
+  a.hidden = true;
   a.until = e.now + seconds;
   a.anim = 'idle';
   wait(e, a, Math.max(1, Math.min(seconds, LONG_NAP)));
@@ -74,13 +78,19 @@ export function thinkGrazer(e: Eco, a: Animal): void {
   // A burrow is safe: nothing reaches a rabbit there, and it stays until all is quiet and it is time to feed.
   if (a.state === ST_HIDE) {
     if (e.personNear(a.x, a.y, a.z, sp.flight)) a.until = Math.max(a.until, now + 8);
-    if (now < a.until || a.alarmUntil > now || g.mode !== GM_FEED) {
+    // A kit stays down as long as its mother does.
+    const below = a.mother !== null && a.mother.state === ST_HIDE;
+    if (now < a.until || a.alarmUntil > now || g.mode !== GM_FEED || below) {
       a.anim = g.mode === GM_SLEEP ? 'sleep' : 'idle';
-      if (now >= a.until && a.alarmUntil <= now) a.why = g.mode === GM_SLEEP ? WHY_NIGHT : g.mode === GM_SHELTER ? WHY_RAIN : WHY_DAY;
-      wait(e, a, now < a.until ? Math.min(a.until - now + 0.2, LONG_NAP) : LONG_NAP);
+      if (now >= a.until && a.alarmUntil <= now) {
+        a.why = g.mode === GM_SLEEP ? WHY_NIGHT : g.mode === GM_SHELTER ? WHY_RAIN : g.mode === GM_FEED ? WHY_MOTHER : WHY_DAY;
+      }
+      // The warren coming out wakes its members; only a kit waiting on its mother has to keep looking.
+      wait(e, a, now < a.until ? Math.min(a.until - now + 0.2, LONG_NAP) : below && g.mode === GM_FEED ? 3 : LONG_NAP);
       return;
     }
     a.state = ST_IDLE;
+    a.hidden = false;
   }
 
   // --- danger comes before everything ---
@@ -115,7 +125,13 @@ export function thinkGrazer(e: Eco, a: Animal): void {
     return;
   }
 
-  if (a.mother && followMother(e, a)) return;
+  // A youngster keeps to its mother. A rabbit kit goes down the burrow on its own when the warren is in, and
+  // after its mother when she has gone to ground: it does not sit at the mouth of the burrow waiting for her.
+  if (a.mother && sp.groupType === GT_WARREN && a.mother.state === ST_HIDE) {
+    layUp(e, a, g, WHY_MOTHER);
+    return;
+  }
+  if (a.mother && (sp.groupType !== GT_WARREN || g.mode === GM_FEED) && followMother(e, a)) return;
 
   if (a.state === ST_EAT) {
     if (now < a.until) {
@@ -143,7 +159,7 @@ export function thinkGrazer(e: Eco, a: Animal): void {
   // The ground can change under an animal that is standing still: a block placed, or dug away.
   if (a.mode === MODE_STILL && !footingOk(e, a)) unstick(e, a);
 
-  if (g.mode === GM_FEED || a.hunger > 0.85) feed(e, a, g);
+  if (g.mode === GM_FEED || a.hunger > STARVING || a.astray) feed(e, a, g);
   else if (g.mode === GM_ALARM) {
     // The herd is alert but nothing has come near this one: stand and watch.
     if (a.mode === MODE_STILL) a.anim = 'idle';
@@ -174,7 +190,14 @@ function feed(e: Eco, a: Animal, g: Group): void {
   const dx = g.ax - a.x;
   const dz = g.az - a.z;
   const d2 = dx * dx + dz * dz;
-  if (d2 > (range + 4) * (range + 4)) {
+  const far = d2 > (range + 4) * (range + 4);
+  // A starving animal eats what is in front of it, and goes on eating there until it has had enough to travel
+  // on. One cut off from its herd by a river or a bank it cannot climb would otherwise walk up and down in
+  // sight of grass until it died.
+  if (!far || a.hunger < FED_ENOUGH) a.astray = false;
+  else if (a.hunger > STARVING) a.astray = true;
+  const alone = a.astray;
+  if (far && !alone) {
     // Too far from where the group is feeding: go there first.
     if (a.state !== ST_TRAVEL || a.mode !== MODE_WALK) {
       scatter(e, g.ax, g.az, range * 0.6);
@@ -187,7 +210,7 @@ function feed(e: Eco, a: Animal, g: Group): void {
     return;
   }
   if (a.hunger > PECKISH) {
-    const why = a.hunger > 0.85 ? WHY_STARVING : a.hunger > 0.5 ? WHY_HUNGRY : WHY_HABIT;
+    const why = a.hunger > STARVING ? WHY_STARVING : a.hunger > 0.5 ? WHY_HUNGRY : WHY_HABIT;
     if (a.state === ST_SEEK && a.hasFood) {
       if (a.mode === MODE_WALK) {
         wait(e, a, ON_THE_WAY);
@@ -219,9 +242,10 @@ function feed(e: Eco, a: Animal, g: Group): void {
       beginEating(e, a);
       return;
     }
-    // Nothing in reach: move on and look again.
+    // Nothing in reach: move on and look again, round where the group feeds or, cut off from it, round where it is.
     if (a.mode !== MODE_WALK || a.state !== ST_SEEK) {
-      scatter(e, g.ax, g.az, range);
+      if (alone) scatter(e, a.x, a.z, FEED_RANGE);
+      else scatter(e, g.ax, g.az, range);
       a.state = ST_SEEK;
       a.why = why;
       walkTo(e, a, e.spot.x, e.spot.z, sp.walk * 1.3, 1);
@@ -249,10 +273,10 @@ function feed(e: Eco, a: Animal, g: Group): void {
   wait(e, a, a.mode === MODE_WALK ? ON_THE_WAY : Math.max(1, a.until - now));
 }
 
-/** Go to where the group lies up and rest or sleep there. */
-function layUp(e: Eco, a: Animal, g: Group): void {
+/** Go to where the group lies up and rest or sleep there: for the group's reason, or for one of the animal's own. */
+function layUp(e: Eco, a: Animal, g: Group, reason = WHY_NONE): void {
   const warren = a.sp.groupType === GT_WARREN;
-  const why = g.mode === GM_SLEEP ? WHY_NIGHT : g.mode === GM_SHELTER ? WHY_RAIN : WHY_DAY;
+  const why = reason !== WHY_NONE ? reason : g.mode === GM_SLEEP ? WHY_NIGHT : g.mode === GM_SHELTER ? WHY_RAIN : WHY_DAY;
   let tx: number;
   let tz: number;
   let near: number;

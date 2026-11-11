@@ -1,13 +1,15 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { SIM_DT } from '../clock';
+import { DAYS_PER_SEASON, DAY_SECONDS, SIM_DT } from '../clock';
 import type { CensusRow } from './index';
 import { WILD_KINDS } from './species';
 import { floorCellY } from './terrain';
+import { builtKit } from './testbuild';
 import { type Rig, censusTable, countForage, envNumber, makeRig, misplaced } from './testkit';
 
 /** Simulated years the soak runs. One by default; `ECO_SOAK_YEARS=3 npm test` for the long look. */
 const YEARS = Math.max(1, Math.round(envNumber('ECO_SOAK_YEARS', 1)));
 const SEASONS = ['spring', 'summer', 'autumn', 'winter'];
+const SEASON_SECONDS = DAYS_PER_SEASON * DAY_SECONDS;
 
 // The whole ecosystem on the fixture, left to itself with nothing brought in
 // from outside, looked at at the end of every season. The tests below share
@@ -20,6 +22,12 @@ describe(`${YEARS} simulated ${YEARS === 1 ? 'year' : 'years'} of the whole ecos
     forage: number;
   }
   const marks: Mark[] = [];
+  /**
+   * The census at the last tick of each season. The marks are taken a few
+   * hours later, at the hour of the morning the run began, which is near
+   * enough for everything but saying which season a birth fell in.
+   */
+  const turns: CensusRow[][] = [];
   const midwinter: CensusRow[][] = [];
   const problems: string[] = [];
   const overCap: string[] = [];
@@ -33,7 +41,12 @@ describe(`${YEARS} simulated ${YEARS === 1 ? 'year' : 'years'} of the whole ecos
     start = rig.eco.census();
     forageAtStart = countForage(rig.world);
     console.log(`Start: ${rig.eco.views.length} animals, ${forageAtStart} forage plants\n${censusTable(rig.eco)}`);
+    let turn = SEASON_SECONDS;
     const watch = (tick: number): void => {
+      if (rig.clock.time + SIM_DT >= turn) {
+        turns.push(rig.eco.census());
+        turn += SEASON_SECONDS;
+      }
       if (tick % 241 !== 0) return;
       if (problems.length < 10) problems.push(...misplaced(rig.world, rig.eco.views));
       for (const r of rig.eco.census()) if (r.count > r.cap) overCap.push(`${r.kind} ${r.count} > ${r.cap} on day ${rig.clock.day}`);
@@ -90,16 +103,19 @@ describe(`${YEARS} simulated ${YEARS === 1 ? 'year' : 'years'} of the whole ecos
   });
 
   it('the young come in their season', () => {
-    const [spring, summer, autumn, winter] = marks as [Mark, Mark, Mark, Mark];
+    // Season by season, each counted to its last tick.
+    expect(turns.length).toBe(YEARS * 4);
+    const [spring, summer, , winter] = turns as [CensusRow[], CensusRow[], CensusRow[], CensusRow[]];
     // Fawns, piglets, cubs and pups in spring only.
-    for (const kind of ['deer', 'boar']) expect(of(spring.rows, kind).births, `${kind} born in spring`).toBeGreaterThan(0);
-    for (const kind of ['deer', 'boar', 'fox', 'wolf']) expect(of(winter.rows, kind).births, `${kind} born after spring`).toBe(of(spring.rows, kind).births);
-    expect(of(spring.rows, 'fox').births + of(spring.rows, 'wolf').births).toBeGreaterThan(0);
-    // Rabbits through spring and summer, the last litters dropping in the first days of autumn; none in winter.
-    expect(of(spring.rows, 'rabbit').births).toBeGreaterThan(20);
-    expect(of(autumn.rows, 'rabbit').births).toBeGreaterThan(of(spring.rows, 'rabbit').births);
-    expect(of(winter.rows, 'rabbit').births).toBe(of(autumn.rows, 'rabbit').births);
-    expect(of(summer.rows, 'songbird').births).toBeGreaterThan(5);
+    for (const kind of ['deer', 'boar']) expect(of(spring, kind).births, `${kind} born in spring`).toBeGreaterThan(0);
+    for (const kind of ['deer', 'boar', 'fox', 'wolf']) expect(of(winter, kind).births, `${kind} born after spring`).toBe(of(spring, kind).births);
+    expect(of(spring, 'fox').births + of(spring, 'wolf').births).toBeGreaterThan(0);
+    // Rabbits through spring and summer, and none after: the courting stops when a litter could no longer come in time.
+    expect(of(spring, 'rabbit').births).toBeGreaterThan(20);
+    expect(of(summer, 'rabbit').births).toBeGreaterThan(of(spring, 'rabbit').births);
+    expect(of(winter, 'rabbit').births).toBe(of(summer, 'rabbit').births);
+    expect(of(summer, 'songbird').births).toBeGreaterThan(5);
+    expect(of(winter, 'songbird').births).toBe(of(summer, 'songbird').births);
   });
 
   it('songbirds are fewer in winter, and back in spring', () => {
@@ -170,27 +186,6 @@ describe('cost', () => {
     makeRig: typeof makeRig;
   }
 
-  /**
-   * The simulation as the game ships it: one bundle, built by the same tool
-   * that builds the game. The test runner links modules differently (every
-   * imported name is looked up through a getter each time it is read), which
-   * costs this code about as much again as the work itself, so a tick timed
-   * in the runner says more about the runner than about the tick.
-   */
-  async function built(): Promise<Kit> {
-    // Named through a variable so the type checker does not pull the bundler's Node types into the game's sources.
-    const name = 'vite';
-    const vite = (await import(/* @vite-ignore */ name)) as { build: (config: object) => Promise<unknown> };
-    const entry = new URL('./testkit.ts', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
-    const result = await vite.build({
-      configFile: false,
-      logLevel: 'silent',
-      build: { write: false, minify: false, lib: { entry, formats: ['iife'], name: 'EcoKit' } },
-    });
-    const first = (Array.isArray(result) ? result[0] : result) as { output: { code: string }[] };
-    return (0, eval)(`${first.output[0]?.code ?? ''}\n;EcoKit`) as Kit;
-  }
-
   interface Cost {
     /** Mean wall-clock microseconds per `tick()` over one simulated day, and the cheapest and dearest hours of it. */
     mean: number;
@@ -242,9 +237,10 @@ describe('cost', () => {
   }
 
   it('a tick costs well under 40 microseconds with the fixture fully stocked', async () => {
+    // The simulation as the game ships it is what is judged: see `testbuild.ts` for why the runner's own reading is not.
     let game: Cost | null = null;
     try {
-      game = measure(await built(), 2);
+      game = measure(await builtKit(), 2);
     } catch (err) {
       console.log(`Could not build the simulation as the game does (${String(err)}); timing it in the test runner only.`);
     }
