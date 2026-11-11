@@ -9,14 +9,17 @@
 // Headless and deterministic: no DOM, no randomness, no wall clock. The same
 // sequence of edits and `step(dt)` calls gives the same world and bodies.
 
+import RAPIER from '@dimforge/rapier3d-compat';
 import { Emitter } from '../core/events';
 import { LOOSE, REPLACEABLE, SOLID, STATE_COUNT } from '../world/blocks';
 import type { ItemStack } from '../world/items';
 import type { BlockChange, World } from '../world/world';
+import type { Body } from './body';
 import { Fluid } from './fluid';
 import { addItem, collectItems, dropBlock } from './items';
 import { LooseBlocks } from './loose';
 import { RigidBodies } from './rigid';
+import { toItems } from './settle';
 import { Structure, type DetachedCell } from './structure';
 import { FLUID_DT, RIGID_DT, type BodyView, type PhysicsEvent, type PhysicsOptions, type PhysicsStats } from './types';
 
@@ -212,6 +215,33 @@ export class Physics {
   /** Pour finite water into a cell, in sixteenths of a block. Returns what fitted. */
   addWater(x: number, y: number, z: number, units: number): number {
     return this.fluid.addWater(x, y, z, units);
+  }
+
+  /**
+   * The nearest rigid body or item a ray meets within `maxDistance` metres,
+   * as of the last step: what the player's crosshair is on, if it is on a
+   * body rather than the grid. Terrain does not stop the ray; compare the
+   * distance with the block hit by the caller's own grid ray.
+   */
+  pickBody(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxDistance: number): { id: number; distance: number } | null {
+    const length = Math.hypot(dx, dy, dz);
+    if (!(length > 0)) return null;
+    const ray = new RAPIER.Ray({ x: ox, y: oy, z: oz }, { x: dx / length, y: dy / length, z: dz / length });
+    const hit = this.rigid.rapier.castRay(ray, maxDistance, true, RAPIER.QueryFilterFlags.EXCLUDE_FIXED);
+    const body = hit?.collider.parent()?.userData as Body | undefined;
+    return hit && body && !body.dead ? { id: body.view.id, distance: hit.timeOfImpact } : null;
+  }
+
+  /**
+   * Break a block or compound body into the item drops of its blocks, where
+   * it lies: the player hitting a piece of rubble that never went back into
+   * the grid. Returns false if there is no such body.
+   */
+  breakBody(id: number): boolean {
+    const body = this.rigid.bodies.find((b) => b.view.id === id && !b.dead);
+    if (!body || body.kind === 'item') return false;
+    toItems(this.rigid, body);
+    return true;
   }
 
   // -------------------------------------------------------------------------

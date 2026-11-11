@@ -131,6 +131,38 @@ describe('physics', () => {
     physics.dispose();
   });
 
+  it('lets the player find a piece of rubble with a ray and break it into items', async () => {
+    const { physics } = await setup({ settleTime: 1e9 });
+    const rigid = internals(physics);
+    // Two logs joined, lying crooked, and a brick beyond them on the same line.
+    const logs = rigid.create([{ dx: 0, dy: 0, dz: 0, state: B.oak_log }, { dx: 0, dy: 1, dz: 0, state: B.oak_log }], 20.5, TOP + 0.6, 20.5, {
+      rotation: { x: 0, y: Math.sin(0.3), z: 0, w: Math.cos(0.3) },
+    });
+    const brick = physics.spawnBlock(B.bricks, 24.5, TOP + 0.6, 20.5);
+    run(physics, 2);
+    // Looking along +x at knee height from four blocks back.
+    const first = physics.pickBody(16.5, TOP + 0.5, 20.5, 5, 0, 0, 20);
+    expect(first?.id).toBe(logs.view.id);
+    expect(first?.distance).toBeGreaterThan(3.2);
+    expect(first?.distance).toBeLessThan(3.6);
+    // Out of reach, or looking away: nothing.
+    expect(physics.pickBody(16.5, TOP + 0.5, 20.5, 1, 0, 0, 2)).toBeNull();
+    expect(physics.pickBody(16.5, TOP + 0.5, 20.5, 0, 1, 0, 20)).toBeNull();
+
+    expect(physics.breakBody(logs.view.id)).toBe(true);
+    expect(physics.breakBody(logs.view.id)).toBe(false);
+    physics.step(RIGID_DT);
+    const drops = physics.bodies.filter((b) => b.kind === 'item');
+    expect(drops.reduce((n, b) => n + b.count, 0)).toBe(2);
+    expect(drops.every((b) => b.item === item('oak_log').id)).toBe(true);
+    // With the logs gone the same ray reaches what was behind them: an item where they lay, or the brick.
+    run(physics, 1);
+    physics.collectItems(20.5, TOP + 0.5, 20.5, 3);
+    physics.step(RIGID_DT);
+    expect(physics.pickBody(16.5, TOP + 0.5, 20.5, 1, 0, 0, 20)?.id).toBe(brick);
+    physics.dispose();
+  });
+
   it('brings a felled tree down as one body, sheds its leaves, and loses no logs', async () => {
     const { world, physics, events } = await setup();
     growTree(world, 30, TOP, 30, 'birch', new Rng(3), true);
