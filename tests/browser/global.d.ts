@@ -11,6 +11,15 @@ declare global {
       game: {
         info: { spawn: { x: number; y: number; z: number } };
         player: { x: number; y: number; z: number; onGround: boolean; flying: boolean };
+        plan: {
+          center: { x: number; y: number; z: number };
+          buildings: unknown[];
+          fields: unknown[];
+          lamps: unknown[];
+        } | null;
+        pool: { pending: number };
+        fps: number;
+        stop(): void;
       } | null;
       look(x: number, y: number, z: number, yawDeg: number, pitchDeg: number): void;
       setHour(hour: number): void;

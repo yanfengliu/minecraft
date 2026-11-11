@@ -5,10 +5,10 @@
 // Headless and deterministic.
 
 import { Emitter } from '../core/events';
-import { TAU, clamp, damp, saturate } from '../core/math';
-import type { Rng } from '../core/rng';
+import { TAU, clamp, damp, saturate, smoothstep } from '../core/math';
+import { type Rng, rand2 } from '../core/rng';
 import { type Clock, HOUR_SECONDS } from './clock';
-import { daylight } from './sky';
+import { daylight, sunTimes } from './sky';
 
 export const REGIMES = ['clear', 'fair', 'overcast', 'rain', 'storm', 'fog'] as const;
 export type Regime = (typeof REGIMES)[number];
@@ -102,10 +102,14 @@ export class Weather implements WeatherView {
   private windDirTarget: number;
   private nextStrike = Infinity;
   private forced = false;
+  private readonly mistSeed: number;
+  private regimeFog = 0.03;
+  private mist = 0;
 
   constructor(rng: Rng, clock: Clock) {
     this.rng = rng;
     this.clock = clock;
+    this.mistSeed = rng.fork('mist').u32();
     this.windDir = rng.range(0, TAU);
     this.windDirTarget = this.windDir;
     this.nextChange = clock.time + rng.range(1, 3) * HOUR_SECONDS;
@@ -122,6 +126,23 @@ export class Weather implements WeatherView {
     const seasonal = 11 + 13 * Math.sin(TAU * (this.clock.yearProgress - 0.1));
     const daily = -5 * Math.cos(((this.clock.hour - 3) / 24) * TAU) * (1 - 0.6 * this.cloudCover);
     return seasonal + daily;
+  }
+
+  /**
+   * Mist that gathers on still, clear nights and burns off as the morning warms: 0 for none.
+   * It is thin beside real fog, but it is what makes the low sun show as beams between the trees.
+   */
+  private dawnMist(): number {
+    const rise = sunTimes(this.clock).rise;
+    const h = this.clock.hour;
+    const shape = smoothstep(rise - 2.5, rise - 0.3, h) * (1 - smoothstep(rise + 1.2, rise + 3.2, h));
+    if (shape <= 0) return 0;
+    const calm = 1 - saturate((this.windSpeed - 2.5) / 5);
+    const clearNight = 1 - smoothstep(0.5, 0.9, this.cloudCover);
+    // One morning in five has none; about half have all of it.
+    const today = smoothstep(0.2, 0.5, rand2(this.clock.day, 0, this.mistSeed));
+    const depth = 0.3 + 0.1 * rand2(this.clock.day, 1, this.mistSeed);
+    return depth * shape * calm * clearNight * today;
   }
 
   /** Pin the weather to a regime (debugging and tests). Pass null to release it. */
@@ -172,10 +193,14 @@ export class Weather implements WeatherView {
     }
 
     const t = TARGETS[this.regime];
-    // Ease rates are per simulated second: clouds turn over in roughly a quarter of an hour.
+    // Ease rates are per simulated second, which is a game minute: cloud turns over in about four game
+    // hours (four minutes of play at normal speed), so a change of regime is watched, not switched.
     this.cloudCover = damp(this.cloudCover, t.cloud, 1 / 240, dt);
     this.precipitation = damp(this.precipitation, this.cloudCover > 0.7 ? this.rainTarget : 0, 1 / 90, dt);
-    this.fog = damp(this.fog, t.fog, 1 / 300, dt);
+    this.regimeFog = damp(this.regimeFog, t.fog, 1 / 300, dt);
+    // Dawn mist comes and goes within the hour, much faster than the regime's own fog.
+    this.mist = damp(this.mist, this.dawnMist(), 1 / 40, dt);
+    this.fog = Math.max(this.regimeFog, this.mist);
     this.storminess = damp(this.storminess, this.regime === 'storm' ? 1 : 0, 1 / 120, dt);
 
     const gust = 1 + 0.35 * Math.sin(now * 0.11) * Math.sin(now * 0.037 + 1.3) + 0.15 * Math.sin(now * 0.53);

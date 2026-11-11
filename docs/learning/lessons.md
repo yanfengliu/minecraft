@@ -9,3 +9,5 @@ A new lesson is an entry there plus one line here, and that line NAMES THE GATE 
 When the gate lands, prove it red by reintroducing the defect, record that in [gate-proofs.md](gate-proofs.md), and delete both halves in the same commit.
 
 ## Rules
+
+- A screen-space pass must take its surface normal from depth, never from the G-buffer normal, which carries each tile's painted relief. [Evidence](lessons-evidence.md#occlusion-read-the-relief-normals) **gate:** a browser test that builds a flat wall of a high-contrast tile and fails if turning ambient occlusion on changes its mean brightness by more than a few percent.

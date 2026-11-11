@@ -1,7 +1,7 @@
 // Painters for foliage, ground plants and crops. All of these are cutout
 // tiles: the painter clears the tile and draws only the plant.
 
-import { type Art, type Rgb, TILE, hex, scaleRgb } from './art';
+import { type Art, type Rgb, TILE, hex, mixRgb, scaleRgb } from './art';
 import type { Painter } from './terrain';
 
 const LEAF = hex('#5f8f3d');
@@ -10,16 +10,22 @@ const STEM = hex('#527f38');
 
 function canopy(light: Rgb, dark: Rgb, holes: number, needles = false): Painter {
   return (a) => {
+    const mid = mixRgb(light, dark, 0.5);
     a.each((x, y) => {
-      const clump = a.n(x, y, 4, 1);
+      // Clumps at two scales under per-pixel grain: no single blob is big enough to be picked out
+      // again in the next block, which is what makes a repeated tile read as a pattern.
+      const v = 0.36 * a.n(x, y, 8, 1) + 0.24 * a.n(x, y, 4, 3) + 0.4 * a.r(x, y, 2);
       const streak = needles ? 0.12 * (((x + y * 2) % 4) < 2 ? 1 : -1) : 0;
-      const c = clump > 0.5 ? light : dark;
-      return scaleRgb(c, 0.86 + 0.28 * a.r(x, y, 2) + streak);
+      const c = v > 0.57 ? light : v < 0.43 ? dark : mid;
+      return scaleRgb(c, 0.9 + 0.2 * a.r(x, y, 5) + streak);
     });
-    // Gaps cluster (the smooth term) but every tile gets some (the per-pixel term).
+    // Gaps are mostly single pixels, loosely gathered, and every tile gets some.
+    const gap = (x: number, y: number): boolean => a.n(x, y, 8, 7) * 0.4 + a.r(x, y, 8) * 0.6 < holes;
     for (let y = 0; y < TILE; y++) {
       for (let x = 0; x < TILE; x++) {
-        if (a.n(x, y, 4, 7) * 0.65 + a.r(x, y, 8) * 0.35 < holes) a.alpha[y * TILE + x] = 0;
+        if (gap(x, y)) a.alpha[y * TILE + x] = 0;
+        // The leaf below a gap is in the shade of the ones around it, which gives the canopy depth.
+        else if (gap(x, y - 1)) a.px(x, y, scaleRgb(a.get(x, y), 0.7));
       }
     }
     a.setRough(0.7);

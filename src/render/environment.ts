@@ -14,6 +14,8 @@ type Rgb3 = [number, number, number];
 const AMBIENT_BOOST = 3.3;
 /** The exposure that authored light (torches, stars) was tuned against. */
 const EXPOSURE_REF = 3.2;
+/** Metres of sea-level fog a vertical beam crosses on its way to the ground (the fog thins with height). */
+const FOG_DEPTH = 45;
 
 // Tint multipliers at the middle of each season; values between are interpolated around the year.
 const GRASS: Rgb3[] = [[0.94, 1.03, 0.84], [1.0, 0.98, 0.84], [1.22, 0.96, 0.68], [1.06, 0.92, 0.84]];
@@ -89,7 +91,12 @@ export class Environment {
     const useSun = sun.y > -0.035;
     const body = useSun ? sun : moon;
     const T = useSun ? sunT : moonT;
-    const strength = (useSun ? SUN_INTENSITY * sunUp : this.moonIntensity * moonUp) * directThrough;
+    this.fogDensity = 0.00009 + weather.fog * weather.fog * 0.03 + weather.precipitation * 0.0035;
+    // Fog takes light out of the beam on its way down, more the lower the light, and hands it back
+    // from every side: thick fog has no shadows, thin mist only softens them.
+    const fogThrough = Math.exp((-(this.fogDensity - 0.00009) * FOG_DEPTH) / Math.max(body.y, 0.12));
+    const above = (useSun ? SUN_INTENSITY * sunUp : this.moonIntensity * moonUp) * directThrough;
+    const strength = above * fogThrough;
     this.keyDir = body.y > 0.02 ? body : normalizeUp(body);
     this.keyColor = [(strength * T.x) / Math.PI, (strength * T.y) / Math.PI, (strength * T.z) / Math.PI];
     // Shadows fade out as their light grazes the horizon, which also hides the hand-over between sun and moon.
@@ -112,6 +119,10 @@ export class Environment {
     ar = lerp(ar, mean, 0.35);
     ag = lerp(ag, mean, 0.35);
     ab = lerp(ab, mean, 0.35);
+    const fogFill = (above * Math.max(body.y, 0) * (1 - fogThrough) * 0.3) / Math.PI;
+    ar += fogFill * T.x;
+    ag += fogFill * T.y;
+    ab += fogFill * T.z;
     this.ambientSky = [ar + 0.0012, ag + 0.0016, ab + 0.0026];
 
     // Sunlit ground throws warm light back up under eaves and onto shaded walls.
@@ -123,7 +134,6 @@ export class Environment {
     ];
 
     this.night = 1 - smoothstep(-0.14, 0.06, sun.y);
-    this.fogDensity = 0.00009 + weather.fog * weather.fog * 0.03 + weather.precipitation * 0.0035;
 
     // Exposure follows the light actually in the scene, the way an eye or a camera does: twilight is a
     // thousand times dimmer than noon and still has to be seen. `scene` estimates the radiance of lit

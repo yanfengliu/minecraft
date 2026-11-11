@@ -6,7 +6,8 @@ export type Painter = (a: Art) => void;
 
 const DIRT = hex('#7b5a3c');
 const STONE = hex('#8b8b87');
-const BEAM = hex('#4b3524');
+// Dark oak, but not so dark that a timber frame in shade is a black hole in the wall.
+const BEAM = hex('#5a4a38');
 const GRASS = hex('#5c8a3b');
 
 /** Blotchy base colour with scattered flecks: the workhorse for natural surfaces. */

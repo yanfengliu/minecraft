@@ -3,19 +3,37 @@
 
 import { COMMON, FRAME_BLOCK } from './common';
 
-/** Ambient occlusion from depth and normals, at half resolution. */
+/**
+ * Ambient occlusion from depth alone, at half resolution. The normal is rebuilt
+ * from depth, not read from the G-buffer: that one carries each tile's painted
+ * relief, and a tilted normal sees the flat face it sits on as an occluder, which
+ * smears a dark halo round every high-contrast texel.
+ */
 export const SSAO_FS = /* glsl */ `
 ${FRAME_BLOCK}
 ${COMMON}
 uniform sampler2D uDepth;
-uniform sampler2D uNormal;
 in vec2 vUV;
 out vec4 oColor;
+
+vec3 at(vec2 uv) {
+  return worldFromDepth(uv, texture(uDepth, uv).r);
+}
+// Of the two neighbours along each screen axis, the nearer in space is the one on the same surface.
+vec3 faceNormal(vec3 P) {
+  vec3 r = at(vUV + vec2(uScreen.z, 0.0)) - P;
+  vec3 l = P - at(vUV - vec2(uScreen.z, 0.0));
+  vec3 u = at(vUV + vec2(0.0, uScreen.w)) - P;
+  vec3 d = P - at(vUV - vec2(0.0, uScreen.w));
+  vec3 n = normalize(cross(dot(r, r) < dot(l, l) ? r : l, dot(u, u) < dot(d, d) ? u : d));
+  return dot(n, P - uCameraPos.xyz) > 0.0 ? -n : n;
+}
+
 void main() {
   float d = texture(uDepth, vUV).r;
   if (d >= 1.0) { oColor = vec4(1.0); return; }
   vec3 P = worldFromDepth(vUV, d);
-  vec3 N = decodeNormal(texture(uNormal, vUV).rg);
+  vec3 N = faceNormal(P);
   float viewZ = linearDepth(d);
   const float RADIUS = 1.1;
   // Projected radius in UV units; kept within a sane number of pixels near and far.

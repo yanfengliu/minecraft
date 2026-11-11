@@ -8,13 +8,14 @@ import { Inventory } from './player/inventory';
 import { Player } from './player/player';
 import { Environment } from './render/environment';
 import { MeshPool } from './render/meshPool';
+import { Particles } from './render/particles';
 import { type Camera, type FrameInfo, Renderer } from './render/renderer';
 import { type AnimState, ENTITY_KINDS, type EntityKind, type EntityView, type InspectInfo, type VillagePlan } from './sim/api';
 import { Clock, SIM_DT } from './sim/clock';
 import { type Regime, Weather } from './sim/weather';
 import { Hud } from './ui/hud';
 import { watchAttachments } from './world/attach';
-import { B } from './world/blocks';
+import { B, BLOCKS } from './world/blocks';
 import type { IslandInfo } from './world/gen/island';
 import { DEFAULT_ISLAND, type IslandConfig } from './world/gen/terrain';
 import { dropOf } from './world/items';
@@ -65,6 +66,7 @@ export class Game {
   readonly player: Player;
   readonly inventory = new Inventory();
   readonly interaction = new Interaction();
+  readonly particles = new Particles();
   readonly camera: Camera;
   readonly hud: Hud;
   /** Simulated seconds per real second. */
@@ -282,10 +284,14 @@ export class Game {
 
     this.player.update(dt, this.input, this.world, (x, y, z) => this.flowAt(x, y, z));
     this.interaction.update(dt, this.input, this.player, this.world, this.inventory, {
-      broke: (_x, _y, _z, _state, drop) => {
+      broke: (x, y, z, state, drop) => {
         if (drop) this.inventory.add(drop.item, drop.count);
+        this.particles.burst('break', x + 0.5, y + 0.5, z + 0.5, this.colorOf(state));
       },
     });
+    this.particles.windX = this.weather.windX;
+    this.particles.windZ = this.weather.windZ;
+    this.particles.update(dt, this.world);
     const t = this.interaction.target;
     const box = t ? selectionBox(this.world, t.x, t.y, t.z) : null;
     this.renderer.selection = box ? { box, progress: this.interaction.progress } : null;
@@ -349,6 +355,13 @@ export class Game {
     return best;
   }
 
+  /** The typical colour of a block (linear RGB), for the chips it breaks into. */
+  colorOf(state: number): [number, number, number] {
+    const tile = (BLOCKS[state]?.tiles[4] ?? 0) * 3;
+    const a = this.renderer.tileSet.average;
+    return [a[tile] as number, a[tile + 1] as number, a[tile + 2] as number];
+  }
+
   /** The push of flowing water at a point: river cells carry their baked direction. */
   private flowAt(x: number, y: number, z: number): { x: number; z: number } {
     const s = this.world.get(Math.floor(x), Math.floor(y), Math.floor(z));
@@ -371,6 +384,7 @@ export class Game {
     for (const v of this.seen) {
       if ((v.x - cam.x) ** 2 + (v.z - cam.z) ** 2 < 260 * 260) ents.addEntity(v, this.world, dt);
     }
+    this.particles.draw(ents, this.world);
     ents.finish();
 
     const info: FrameInfo = {

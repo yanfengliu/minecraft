@@ -57,6 +57,13 @@ float fogAmount(vec3 eye, vec3 dir, float dist) {
   float integral = abs(dy) < 0.01 ? exp(-h0 * k) * dist : (exp(-h0 * k) - exp(-(h0 + dy) * k)) / (k * dir.y);
   return 1.0 - exp(-max(integral, 0.0) * uFog.a - dist * 0.00007);
 }
+// The same fog seen against the sky: that ray never lands, so it crosses the whole layer. Only the
+// weather's fog counts here; clear air is already in the sky's own colour.
+float skyFogAmount(vec3 eye, vec3 dir) {
+  float k = 1.0 / 55.0;
+  float integral = exp(-(eye.y - uClip.z) * k) / (k * max(dir.y, 0.004));
+  return 1.0 - exp(-integral * max(uFog.a - 0.00009, 0.0));
+}
 vec3 fogColor(vec3 dir) {
   // The air takes the colour of the sky near the horizon in that direction, warmed toward the key light.
   vec3 flat_ = normalize(vec3(dir.x, abs(dir.y) * 0.25 + 0.03, dir.z));
@@ -161,7 +168,7 @@ void main() {
   if (depth >= 1.0) {
     vec3 sky = renderSky(-V);
     vec4 cloud = texture(uClouds, vUV);
-    oColor = vec4(sky * cloud.a + cloud.rgb, 1.0);
+    oColor = vec4(mix(sky * cloud.a + cloud.rgb, fogColor(-V), skyFogAmount(eye, -V)), 1.0);
     return;
   }
 

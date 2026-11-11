@@ -22,6 +22,7 @@ import { LIGHTING_FS, SKY_LUT_FS } from './shaders/lighting';
 import { OVERLAY_FS, OVERLAY_VS, overlayCube } from './shaders/overlay';
 import { PRECIP_FS, PRECIP_VS } from './shaders/precip';
 import { BLOOM_DOWN_FS, BLOOM_UP_FS, COMPOSITE_FS, FXAA_FS, SSAO_BLUR_FS, SSAO_FS } from './shaders/post';
+import { VOLUME_ADD_FS, VOLUME_FS } from './shaders/volumetric';
 import { WATER_FS, WATER_VS } from './shaders/water';
 import { type TileSet, buildTileSet } from './tiles';
 
@@ -44,6 +45,8 @@ export interface RenderSettings {
   shadowDistance: number;
   shadowResolution: number;
   ssao: boolean;
+  /** Light shafts through the air. */
+  shafts: boolean;
   bloom: boolean;
   fxaa: boolean;
 }
@@ -54,6 +57,7 @@ export const DEFAULT_SETTINGS: RenderSettings = {
   shadowDistance: 220,
   shadowResolution: 2048,
   ssao: true,
+  shafts: true,
   bloom: true,
   fxaa: true,
 };
@@ -133,6 +137,9 @@ export class Renderer {
   private cloudFlip = 0;
   private cloudFresh = true;
   private readonly prevViewProj: Mat4 = mat4();
+  private readonly pVolume: Program;
+  private readonly pVolumeAdd: Program;
+  private volume: Target | null = null;
   /** Creatures and loose bodies: fill it between `begin()` and `finish()` each frame, before `render`. */
   readonly entities: EntityRenderer;
   private readonly pEntity: Program;
@@ -275,6 +282,8 @@ export class Renderer {
       min: gl.NEAREST, mag: gl.NEAREST,
     });
 
+    this.pVolume = new Program(gl, 'volume', FULLSCREEN_VS, VOLUME_FS);
+    this.pVolumeAdd = new Program(gl, 'volume-add', FULLSCREEN_VS, VOLUME_ADD_FS);
     this.entities = new EntityRenderer(gl);
     this.pEntity = new Program(gl, 'entity', ENTITY_VS, ENTITY_FS);
     this.pEntityShadow = new Program(gl, 'entity-shadow', ENTITY_VS, ENTITY_SHADOW_FS, { SHADOW: true });
@@ -362,6 +371,9 @@ export class Renderer {
       this.bloom.push(createTarget(gl, bw, bh, [tex(bw, bh, gl.R11F_G11F_B10F, gl.RGB, gl.HALF_FLOAT, gl.LINEAR)]));
     }
     this.ldr = createTarget(gl, w, h, [tex(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR)]);
+    deleteTarget(gl, this.volume);
+    // Alpha carries view depth, which the upsample uses to keep the shafts from bleeding across edges.
+    this.volume = createTarget(gl, hw, hh, [tex(hw, hh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR)]);
     if (this.clouds) this.clouds.forEach((t) => deleteTarget(gl, t));
     const qw = Math.max(1, w >> 2);
     const qh = Math.max(1, h >> 2);
@@ -542,7 +554,7 @@ export class Renderer {
     let aoTex = this.white;
     if (this.settings.ssao) {
       bindTarget(gl, ao[0]);
-      this.pSsao.use().tex('uDepth', 0, gl.TEXTURE_2D, gbuffer.depth).tex('uNormal', 1, gl.TEXTURE_2D, gbuffer.colors[1] as WebGLTexture);
+      this.pSsao.use().tex('uDepth', 0, gl.TEXTURE_2D, gbuffer.depth);
       drawFullscreen(gl);
       bindTarget(gl, ao[1]);
       this.pSsaoBlur.use().tex('uSource', 0, gl.TEXTURE_2D, ao[0].colors[0] as WebGLTexture).f2('uStep', 1 / ao[0].width, 0);
@@ -637,6 +649,25 @@ export class Renderer {
     gl.disable(gl.BLEND);
     gl.disable(gl.DEPTH_TEST);
     gl.depthMask(false);
+
+    // --- light shafts -------------------------------------------------------
+    if (this.settings.shafts && !info.underwater) {
+      const volume = this.volume as Target;
+      bindTarget(gl, volume);
+      const pv = this.pVolume.use();
+      pv.tex('uDepth', 0, gl.TEXTURE_2D, gbuffer.depth).tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
+      pv.tex('uCloudNoise', 8, gl.TEXTURE_3D, this.cloudNoise);
+      gl.uniformMatrix4fv(pv.loc('uShadowMat'), false, this.shadows.matrices);
+      pv.f4v('uShadowSplit', this.shadows.splits).f4v('uShadowTexel', this.shadows.texel).f('uShadowRes', this.shadows.res);
+      drawFullscreen(gl);
+      bindTarget(gl, hdr);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      this.pVolumeAdd.use().tex('uVolume', 0, gl.TEXTURE_2D, volume.colors[0] as WebGLTexture).tex('uDepth', 1, gl.TEXTURE_2D, gbuffer.depth)
+        .f2('uTexel', 1 / volume.width, 1 / volume.height);
+      drawFullscreen(gl);
+      gl.disable(gl.BLEND);
+    }
 
     // --- bloom --------------------------------------------------------------
     let bloomTex = this.noCloud;

@@ -10,17 +10,26 @@ import { type Page, expect, test } from '@playwright/test';
 
 const SOFTWARE = process.env.ALLOW_SOFTWARE_GL === '1';
 
-async function boot(page: Page): Promise<string[]> {
+// A quarter-size island: the same generator and renderer, a fraction of the load time. It is too
+// small to hold the village, so the tests that need one load the full island.
+const SMALL = '/?size=256';
+const FULL = '/';
+
+async function boot(page: Page, url = SMALL): Promise<string[]> {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text().slice(0, 600));
   });
-  // A quarter-size island: the same generator and renderer, a fraction of the load time.
-  await page.goto('/?size=256');
+  await page.goto(url);
   await page.waitForFunction(() => window.__tidewick?.ready === true, undefined, { timeout: 120_000 });
   const error = await page.evaluate(() => window.__tidewick?.error ?? null);
   expect(error, 'the game reported a boot error').toBeNull();
+  // The game's own loop must be running; then it is stopped, so that every second of game time in
+  // these tests is one the test asked for. Left running, it adds real time between a key press and
+  // the step that follows, and how much depends on how busy the machine is.
+  await page.waitForFunction(() => (window.__tidewick?.game?.fps ?? 0) > 0, undefined, { timeout: 30_000 });
+  await page.evaluate(() => window.__tidewick!.game!.stop());
   return errors;
 }
 
@@ -145,4 +154,49 @@ test('a frame fits the 60 Hz budget at 1280 x 720', async ({ page }) => {
   });
   console.log(`frame time: ${ms.toFixed(2)} ms`);
   expect(ms).toBeLessThan(16.6);
+});
+
+test('the full island holds a village and still fits the frame budget', async ({ page }) => {
+  const errors = await boot(page, FULL);
+  await page.waitForFunction(() => window.__tidewick!.game!.pool.pending === 0, undefined, { timeout: 120_000 });
+  const plan = await page.evaluate(() => {
+    const p = window.__tidewick!.game!.plan;
+    return p && { buildings: p.buildings.length, fields: p.fields.length, lamps: p.lamps.length, x: p.center.x, y: p.center.y, z: p.center.z };
+  });
+  expect(plan, 'the full island has no village').not.toBeNull();
+  console.log('village', JSON.stringify(plan));
+  expect(plan!.buildings).toBeGreaterThanOrEqual(20);
+  expect(plan!.fields).toBeGreaterThanOrEqual(2);
+
+  // The heaviest ordinary view: the whole village and the hills behind it, from the air.
+  const frame = async (label: string, dx: number, dy: number, dz: number, yaw: number, pitch: number): Promise<number> => {
+    const ms = await page.evaluate(([x, y, z, yw, pt]) => {
+      const t = window.__tidewick!;
+      t.setHour(15);
+      t.setWeather('fair');
+      t.look(x!, y!, z!, yw!, pt!);
+      t.step(1);
+      t.probe(2, 2);
+      const frames = 90;
+      const t0 = performance.now();
+      t.step(frames / 60);
+      t.probe(2, 2);
+      return (performance.now() - t0) / (frames + 1);
+    }, [plan!.x + dx, plan!.y + dy, plan!.z + dz, yaw, pitch]);
+    const stats = await page.evaluate(() => window.__tidewick!.stats());
+    console.log(`${label}: ${ms.toFixed(2)} ms, ${stats.drawCalls} draws, ${stats.triangles} triangles, ${stats.visible} sections`);
+    return ms;
+  };
+  const aerial = await frame('aerial', -60, 38, 50, 130, -24);
+  const street = await frame('street', 0.5, 2.7, -10.5, 20, 0);
+  if (!SOFTWARE) {
+    expect(aerial).toBeLessThan(16.6);
+    expect(street).toBeLessThan(16.6);
+  }
+
+  // The square is paved and lit: the probe at street level is neither sky nor black.
+  const pixels = await page.evaluate(() => window.__tidewick!.probe(16, 9));
+  const ground = rowMean(pixels, 8, 16);
+  expect(ground[0] + ground[1] + ground[2]).toBeGreaterThan(60);
+  expect(errors).toEqual([]);
 });
