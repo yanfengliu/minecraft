@@ -147,3 +147,11 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# --- project ---
+# Raw output stays out of git (fleet R23): captures, traces, screenshots, reports.
+output/
+tmp/
+test-results/
+playwright-report/
+.claude/worktrees/

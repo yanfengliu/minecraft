@@ -1,0 +1,6 @@
+# One line ending everywhere, whatever the machine's autocrlf says: shaders and
+# generated blocks are compared byte for byte.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.wasm binary

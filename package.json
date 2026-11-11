@@ -1,0 +1,38 @@
+{
+  "name": "minecraft",
+  "version": "0.1.0",
+  "description": "Tidewick: an original voxel sandbox with a living medieval village, wildlife ecosystem, weather and physics, rendered by a custom WebGL2 engine.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yanfengliu/minecraft.git"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "pretest:browser": "npm run build",
+    "test:browser": "playwright test",
+    "docs:check": "node scripts/check-docs.mjs",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run docs:check && npm run test:browser"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "1.64",
+    "@types/node": "^26.6.6",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  }
+}
