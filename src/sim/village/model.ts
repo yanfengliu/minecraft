@@ -292,7 +292,12 @@ export interface Animal {
 // --- counters -------------------------------------------------------------------
 
 export interface VillageStats {
-  /** Residents moved to their destination because no route was found after repeated tries. */
+  /**
+   * Times a resident was put somewhere instead of walking there: carried to a
+   * destination no route was found to after repeated tries, or lifted out of a
+   * cell that could no longer be stood in. Nothing else moves a resident who
+   * has not walked, so a count of zero means everybody walked everywhere.
+   */
   teleports: number;
   /** Route requests that failed. */
   pathFails: number;
