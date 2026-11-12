@@ -6,10 +6,11 @@
 import { clamp } from '../../../core/math';
 import { Rng } from '../../../core/rng';
 import { B, gateState } from '../../blocks';
-import type { Area, Building, BuildingKind, Cell, CropName, Field, Pen, Stall, VillagePlan } from '../../plan';
+import type { Building, BuildingKind, Cell, CropName, Field, Pen, Stall, VillagePlan } from '../../plan';
 import type { World } from '../../world';
-import { BIOME_FOREST, BIOME_HIGHLAND, BIOME_MEADOW, BIOME_PINE, type Terrain } from '../terrain';
+import type { Terrain } from '../terrain';
 import { SPECS, buildShell, furnish } from './buildings';
+import { surveyCountry } from './country';
 import { Frame } from './frame';
 
 const N = 0;
@@ -445,41 +446,7 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
   }
 
   // --- the country around: where the woodcutters, shepherd and hunter go ---
-  const survey = (wanted: (biome: number) => boolean, rMin: number, rMax: number, radius: number, fallbackArm: number): Area => {
-    let best: Area = { x: cx + (STEP[fallbackArm] as readonly [number, number])[0] * rMin, z: cz + (STEP[fallbackArm] as readonly [number, number])[1] * rMin, radius };
-    // Below this nothing found is worth more than the fallback beside the road.
-    let bestScore = 0.25;
-    for (let r = rMin; r <= rMax; r += 14) {
-      for (let k = 0; k < 24; k++) {
-        const ang = (k / 24) * Math.PI * 2;
-        const x = Math.round(cx + Math.cos(ang) * r);
-        const z = Math.round(cz + Math.sin(ang) * r);
-        if (!inside(x, z) || wet(x, z)) continue;
-        let hits = 0;
-        let samples = 0;
-        for (let dz = -radius; dz <= radius; dz += 5) {
-          for (let dx = -radius; dx <= radius; dx += 5) {
-            const qx = x + dx;
-            const qz = z + dz;
-            samples++;
-            if (inside(qx, qz) && !wet(qx, qz) && reserved[at(qx, qz)] === 0 && wanted(t.biome[at(qx, qz)] as number)) hits++;
-          }
-        }
-        // How much of the place is the ground wanted, less a charge for the walk: it is walked there and
-        // back every working day, so a wood twice as far has to be much the better wood. (Scored by
-        // cover alone, the woodcutters were sent 180 blocks to the island's densest forest.)
-        const score = hits / samples - 0.55 * ((r - rMin) / Math.max(1, rMax - rMin));
-        if (score > bestScore) {
-          bestScore = score;
-          best = { x, z, radius };
-        }
-      }
-    }
-    return best;
-  };
-  const forest = survey((b) => b === BIOME_FOREST || b === BIOME_PINE, 70, 190, 34, N);
-  const pasture = survey((b) => b === BIOME_MEADOW, 66, 150, 20, E);
-  const hunting = survey((b) => b === BIOME_FOREST || b === BIOME_PINE || b === BIOME_HIGHLAND, 105, 260, 55, N);
+  const { forest, pasture, hunting } = surveyCountry(t, reserved, cx, cz);
 
   const standOnRoad = (x: number, z: number): Cell => ({ x, y: (roadY[at(x, z)] >= 0 ? (roadY[at(x, z)] as number) : ground(x, z)) + 1, z });
   const patrol: Cell[] = [];
