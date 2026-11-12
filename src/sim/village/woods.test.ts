@@ -5,75 +5,24 @@
 
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../../core/rng';
-import { B, IS_LEAVES, IS_LOG, SOLID } from '../../world/blocks';
+import { B, IS_LEAVES, IS_LOG } from '../../world/blocks';
 import { TREE_SPECIES, type TreeSpecies, growTree } from '../../world/gen/trees';
 import { type World, createFlatWorld } from '../../world/world';
 import { createBasicActions } from '../api';
 import { FEET } from './fixture-build';
+import { type Box, adrift as adriftIn, cellsOf as cells } from './forest-check';
 import { TICKS_PER_DAY, createHeadlessVillage } from './headless';
 import { Woods } from './woods';
 
 /** The part of a test world the trees stand in: wide and tall enough for two of the largest side by side. */
-const BOX = { x0: 6, x1: 42, z0: 8, z1: 40, y1: FEET + 18 };
+const BOX: Box = { x0: 6, x1: 42, z0: 8, z1: 40, y0: FEET, y1: FEET + 18 };
 const AX = 20;
 const AZ = 24;
 
 const at = (x: number, y: number, z: number): string => `${x},${y},${z}`;
-
-/** Every cell in the box whose state is marked in `table`. */
-function cellsOf(world: World, table: Uint8Array): Set<string> {
-  const out = new Set<string>();
-  for (let y = FEET; y <= BOX.y1; y++) {
-    for (let z = BOX.z0; z <= BOX.z1; z++) {
-      for (let x = BOX.x0; x <= BOX.x1; x++) if (table[world.get(x, y, z)]) out.add(at(x, y, z));
-    }
-  }
-  return out;
-}
-
-/** Cells of `all` that cannot be reached from `from`, stepping through `all` to any of the 26 cells round each. */
-function cutOff(all: Set<string>, from: Iterable<string>, alsoFromBeside = false): number {
-  const reached = new Set<string>();
-  const queue: string[] = [];
-  const visit = (key: string): void => {
-    const [x, y, z] = key.split(',').map(Number) as [number, number, number];
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dz = -1; dz <= 1; dz++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const k = at(x + dx, y + dy, z + dz);
-          if (!all.has(k) || reached.has(k)) continue;
-          reached.add(k);
-          queue.push(k);
-        }
-      }
-    }
-  };
-  for (const key of from) {
-    if (all.has(key)) {
-      if (!reached.has(key)) {
-        reached.add(key);
-        queue.push(key);
-      }
-    } else if (alsoFromBeside) visit(key);
-  }
-  while (queue.length > 0) visit(queue.pop() as string);
-  return all.size - reached.size;
-}
-
-/**
- * What a felling must never leave: wood joined to nothing that stands on the
- * ground, and leaves joined, leaf to leaf, to no wood at all.
- */
-function adrift(world: World): { logs: number; leaves: number } {
-  const logs = cellsOf(world, IS_LOG);
-  const leaves = cellsOf(world, IS_LEAVES);
-  const standing = [...logs].filter((key) => {
-    const [x, y, z] = key.split(',').map(Number) as [number, number, number];
-    const under = world.get(x, y - 1, z);
-    return SOLID[under] === 1 && !IS_LOG[under] && !IS_LEAVES[under];
-  });
-  return { logs: cutOff(logs, standing), leaves: cutOff(leaves, logs, true) };
-}
+const cellsOf = (world: World, table: Uint8Array): Set<string> => cells(world, BOX, table);
+/** What a felling must never leave: wood joined to nothing that stands, and leaves joined to no wood. */
+const adrift = (world: World): { logs: number; leaves: number } => adriftIn(world, BOX);
 
 function grow(world: World, x: number, z: number, species: TreeSpecies, seed: number): boolean {
   return growTree(world, x, FEET, z, species, new Rng(seed));

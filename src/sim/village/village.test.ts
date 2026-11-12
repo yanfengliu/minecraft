@@ -8,7 +8,7 @@ import { ECONOMY_GOODS } from '../../world/items';
 import { ANIM_STATES, type EntityView, type WildlifeApi, validateVillagePlan } from '../api';
 import { DAY_SECONDS, FAIR_DAY } from '../clock';
 import { G, PROFESSIONS, TRADE } from './goods';
-import { type Headless, TICKS_PER_DAY, createHeadlessVillage } from './headless';
+import { type Headless, TICKS_PER_DAY, countCoin, createHeadlessVillage } from './headless';
 import type { Livestock } from './livestock';
 import { FLOCK_PENNED } from './model';
 
@@ -88,6 +88,7 @@ describe('village facade', () => {
 
   it('gives the ledger as plain data covering every economy good', () => {
     const h = createHeadlessVillage(3);
+    const coin = countCoin(h.sim);
     h.step(HOUR * 30);
     const ledger = h.sim.ledger();
     expect(ledger.goods.map((g) => g.good)).toEqual([...ECONOMY_GOODS]);
@@ -99,7 +100,12 @@ describe('village facade', () => {
     }
     expect(ledger.goods.find((g) => g.good === 'bread')!.stock).toBeGreaterThan(20);
     expect(ledger.population).toBe(h.sim.core.residents.length);
-    expect(ledger.coin).toBe(ledger.purses + ledger.tills + ledger.treasury);
+    // The total it shows is what the wallets hold, counted here, and what they held thirty hours ago.
+    expect(ledger.coin).toBe(countCoin(h.sim));
+    expect(ledger.coin).toBe(coin);
+    expect(ledger.purses).toBe(h.sim.core.residents.reduce((n, r) => n + r.coin, 0));
+    expect(ledger.tills).toBe(h.sim.core.businesses.reduce((n, b) => n + b.coin, 0));
+    expect(ledger.treasury).toBe(h.sim.core.treasury.coin);
     expect(ledger.day).toBe(1);
     expect(JSON.parse(JSON.stringify(ledger))).toEqual(ledger);
   });

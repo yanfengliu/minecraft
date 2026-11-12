@@ -13,7 +13,7 @@ import { Weather } from '../weather';
 import { Economy } from './economy';
 import { FEET, GROUND, placeBuilding } from './fixture-build';
 import { G } from './goods';
-import { type Headless, TICKS_PER_DAY, createHeadlessVillage } from './headless';
+import { type Headless, TICKS_PER_DAY, countCoin, createHeadlessVillage } from './headless';
 import { VillageSim } from './index';
 import { PHASE_ACT, PHASE_WALK, type Resident } from './model';
 
@@ -159,6 +159,7 @@ describe('village when the world is edited under it', () => {
   it('never seizes up when a house is walled shut: the household is put where it needs to be, and counted', () => {
     const h = createHeadlessVillage(3);
     const { sim, world } = h;
+    const coin = countCoin(sim);
     h.runTo(0, 12);
     const home = sim.core.households.find((hh) => hh.site.b.kind === 'house')!;
     const door = home.site.b.door!;
@@ -176,7 +177,8 @@ describe('village when the world is edited under it', () => {
     // Next day they are out again, at work or about the village.
     h.runTo(1, 10);
     expect(home.members.some((m) => m.inside !== sim.core.sites.indexOf(home.site))).toBe(true);
-    expect(sim.ledger().coin).toBe(sim.ledger().purses + sim.ledger().tills + sim.ledger().treasury);
+    // And no coin was made or lost in the muddle: the wallets hold what they held at the start.
+    expect(countCoin(sim)).toBe(coin);
   });
 });
 
@@ -217,6 +219,7 @@ describe('village on plans the fixture does not cover', () => {
     expect(sim.core.residents.length).toBe(3);
     expect(sim.core.businesses.length).toBe(0);
     expect(sim.views.length).toBe(3);
+    const coin = countCoin(sim);
     // Nobody to buy from and nothing to sell: they live on the larder, then on what they can forage.
     let worst = 0;
     for (let hour = 0; hour < 24 * 6; hour++) {
@@ -226,7 +229,12 @@ describe('village on plans the fixture does not cover', () => {
     expect(worst).toBeLessThan(0.95);
     expect(sim.stats.foraged).toBeGreaterThan(0);
     expect(sim.stats.teleports).toBe(0);
-    expect(sim.ledger().coin).toBe(sim.ledger().purses + sim.ledger().treasury);
+    // Six evenings of stipends and relief out of the chest, and every coin of it still in the village; no till
+    // holds any, since there is none.
+    expect(countCoin(sim)).toBe(coin);
+    expect(sim.ledger().coin).toBe(coin);
+    expect(sim.ledger().tills).toBe(0);
+    expect(sim.core.residents.reduce((n, r) => n + r.coin, 0)).toBeGreaterThan(0);
     expect(sim.quoteBuy('bread', 1)).toBeNull();
     expect(sim.quoteSell('bread', 1)).toBeNull();
     // 03:00 on the seventh night: all asleep at home.
@@ -237,10 +245,11 @@ describe('village on plans the fixture does not cover', () => {
   it('runs a bakery and a guardhouse with nothing to supply them', () => {
     const { h, step } = hamlet([['bakery', 'Bakehouse'], ['guardhouse', 'Watch house'], ['house', 'Cottage']]);
     const { sim } = h;
-    const coin = sim.ledger().coin;
+    const coin = countCoin(sim);
     step(HOUR * 24 * 4);
     // The baker bakes what flour there was, and the books still balance when it runs out.
     expect(sim.stats.breadBaked).toBeGreaterThan(0);
+    expect(countCoin(sim)).toBe(coin);
     expect(sim.ledger().coin).toBe(coin);
     expect(sim.stats.teleports).toBe(0);
     for (const b of sim.core.businesses) for (const n of b.stock) expect(n).toBeGreaterThanOrEqual(0);
