@@ -64,10 +64,14 @@ export class Hud {
     (this.el.panel as HTMLElement).addEventListener('pointerdown', (e) => {
       if (e.button === 0) this.click(e);
     });
-    // A button worked from the keyboard (Enter or Space on it) sends a click and no press. A click that
-    // follows a press has a count of one or more and was dealt with above; the keyboard's has none.
-    (this.el.panel as HTMLElement).addEventListener('click', (e) => {
-      if (e.detail === 0) this.click(e);
+    // A button worked from the keyboard is acted on when the key goes down, for the same reason: the click a
+    // browser makes of Space comes on the key's release, and a repaint in between took the button away.
+    // The browser's own click is stopped, so one press is one action.
+    (this.el.panel as HTMLElement).addEventListener('keydown', (e) => {
+      if ((e.key !== 'Enter' && e.key !== ' ') || e.repeat) return;
+      if (!(e.target as HTMLElement).closest('[data-act]')) return;
+      e.preventDefault();
+      this.click(e);
     });
     const measure = (): void => {
       this.width = root.clientWidth;
@@ -107,21 +111,34 @@ export class Hud {
   private paint(): void {
     const p = this.open ? this.panels.get(this.open) : null;
     if (!p) return;
-    this.write(this.el.panel as HTMLElement, `<button class="close" data-act="close:">Close</button><h2>${esc(p.title)}</h2>${p.render()}`);
+    const el = this.el.panel as HTMLElement;
+    // A repaint replaces every button, and with it whichever had the keyboard's focus: give the focus to the
+    // button that does the same thing in the new markup, or a panel could not be worked from the keyboard
+    // for longer than its figures stood still.
+    const focused = document.activeElement instanceof HTMLElement && el.contains(document.activeElement) ? document.activeElement.dataset.act : undefined;
+    const changed = this.write(el, `<button class="close" data-act="close:">Close</button><h2>${esc(p.title)}</h2>${p.render()}`);
+    if (!changed || focused === undefined) return;
+    for (const b of el.querySelectorAll<HTMLElement>('[data-act]')) {
+      if (b.dataset.act !== focused) continue;
+      b.focus();
+      break;
+    }
   }
 
   /**
-   * Set an element's markup, if it is not that already. Most of what the
-   * interface shows is the same from one frame to the next, and writing it
-   * anyway made the browser rebuild and lay out the element every frame.
+   * Set an element's markup, if it is not that already, and say whether it
+   * was. Most of what the interface shows is the same from one frame to the
+   * next, and writing it anyway made the browser rebuild and lay out the
+   * element every frame.
    */
-  private write(el: HTMLElement, html: string): void {
-    if (this.written.get(el) === html) return;
+  private write(el: HTMLElement, html: string): boolean {
+    if (this.written.get(el) === html) return false;
     this.written.set(el, html);
     el.innerHTML = html;
+    return true;
   }
 
-  private click(e: MouseEvent): void {
+  private click(e: Event): void {
     const target = (e.target as HTMLElement).closest('[data-act]') as HTMLElement | null;
     if (!target) return;
     const [name, arg = ''] = (target.dataset.act as string).split(':');

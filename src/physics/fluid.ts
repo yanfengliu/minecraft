@@ -57,8 +57,10 @@ export interface FluidOptions {
 /** Offsets of the four sideways neighbours inside a section array, whose index is (ly << 10) | (lz << 5) | lx. */
 const OFF = [1, 32, -1, -32];
 const WORDS = 1024;
-/** Full cells a search for room will pass through before the water it is placing is given up as lost. */
-const PUSH_REACH = 256;
+/** Full cells a search for room will pass through before it settles for what it has found, or gives the water up as lost. */
+const PUSH_REACH = 4096;
+/** Full cells it goes on through after finding where the body could rise, in case there is room inside it nearer than that. */
+const PUSH_LINGER = 128;
 
 export class Fluid {
   /** Units that came in from outside: through `addWater`, or by anyone else writing water into the grid. */
@@ -91,9 +93,10 @@ export class Fluid {
   private searches = 0;
   /** Cells that are thin films waiting to dry, with the tick each is due; the wheel holds the same cells by due tick. */
   private readonly films = new Map<number, number>();
-  /** Scratch for `push`: the cells looked at, and the full ones still to be passed through. */
+  /** Scratch for `push`: the cells looked at, the full ones still to be passed through by height, and the open cells round the block. */
   private readonly pushSeen = new Set<number>();
-  private readonly pushQueue: number[] = [];
+  private readonly pushLevels: (number[] | undefined)[] = [];
+  private readonly pushOwn: number[] = [];
   private readonly wheel: number[][];
   private readonly wheelMask: number;
   private readonly seed: number;
@@ -244,33 +247,43 @@ export class Fluid {
   }
 
   /**
-   * Find room for water that has lost its cell. It goes where water would go
-   * of itself: into the cell below, the cells beside (a puddle is squeezed
-   * sideways), the cell above; and where those are water that is already
-   * full, on through them, so that a block sunk in a pool raises the pool
-   * wherever the pool has room, round a ledge or under a roof as well as
-   * straight up. Only when the whole body within reach is full and shut in is
-   * anything lost. (Looking no farther than the four cells beside and the
-   * column above lost a block's worth of a pool that had open sky one cell
-   * over.)
+   * Find room for water that has lost its cell to something put into it. The
+   * water belongs to the body it stood in, so that is where it goes: first
+   * into any water with room beside the block, then, passing through water
+   * that is already full and always taking the highest of it next, into the
+   * first water with room that is met; and if the body has none, on top of
+   * it or out at its side, wherever the lowest open cell against it was
+   * found. Only for want of any body does the water go into the open round the
+   * block itself (a puddle squeezed aside), and only when all of that fails is
+   * anything lost.
+   *
+   * Three earlier versions each lost or misplaced water: beside and straight
+   * above only (a pool with sky one cell over lost a block's worth); breadth
+   * first for 256 cells (a block at the bottom of a deep pool never reached
+   * the top); and filling whatever open cell came first (water was lifted
+   * onto the block and ran off outside while the pool beside it had room).
    */
   private push(x: number, y: number, z: number, units: number): void {
     const w = this.world;
     const { sx, sz } = w;
     const layer = sx * sz;
     const seen = this.pushSeen;
-    const queue = this.pushQueue;
+    const levels = this.pushLevels;
+    const own = this.pushOwn;
     seen.clear();
-    queue.length = 0;
-    const start = y * layer + z * sx + x;
-    seen.add(start);
-    queue.push(start);
+    own.length = 0;
+    seen.add(y * layer + z * sx + x);
     const r = (x * 3 + z * 5 + this.ticks) & 3;
-    for (let head = 0; head < queue.length && units > 0 && head < PUSH_REACH; head++) {
-      const k = queue[head] as number;
-      const cy = Math.floor(k / layer);
-      const cz = Math.floor((k - cy * layer) / sx);
-      const cx = k - cy * layer - cz * sx;
+    // Full cells still to be passed through, by height: the highest is taken next, so the search climbs
+    // to the surface of whatever body this is, however deep the block was set in it.
+    let highest = -1;
+    let lowest = w.sy;
+    let queued = 0;
+    // An open cell lying on or against the body: where it rises if there is no room within. The lowest found.
+    let spill = -1;
+    let spillY = w.sy;
+
+    const expand = (cx: number, cy: number, cz: number, first: boolean): void => {
       for (let d = 0; d < 6 && units > 0; d++) {
         let nx = cx;
         let ny = cy;
@@ -286,10 +299,53 @@ export class Fluid {
         const nk = ny * layer + nz * sx + nx;
         if (seen.has(nk)) continue;
         seen.add(nk);
-        units -= this.put(nx, ny, nz, units);
         const s = w.get(nx, ny, nz);
-        if (!SOURCE[s] && LEVEL[s] === 16) queue.push(nk);
+        const level = LEVEL[s] as number;
+        if (SOURCE[s] || (level > 0 && level < 16)) {
+          // Water with room in it, or a lake or river, which swallows whatever it is given.
+          units -= this.put(nx, ny, nz, units);
+          if (units <= 0) return;
+        } else if (level === 0) {
+          if (!OPEN[s]) continue;
+          // Open air. Round the block itself it is the last resort; on or beside the body it is where the body rises.
+          if (first) own.push(nk);
+          else if (ny < spillY) {
+            spillY = ny;
+            spill = nk;
+          }
+          continue;
+        }
+        // Full, now or already: to be passed through.
+        (levels[ny] ??= []).push(nk);
+        queued++;
+        if (ny > highest) highest = ny;
+        if (ny < lowest) lowest = ny;
       }
+    };
+
+    expand(x, y, z, true);
+    let expanded = 0;
+    let sinceSpill = 0;
+    while (units > 0 && queued > 0 && expanded < PUSH_REACH && sinceSpill < PUSH_LINGER) {
+      while ((levels[highest] as number[] | undefined)?.length === 0 || levels[highest] === undefined) highest--;
+      const k = (levels[highest] as number[]).pop() as number;
+      queued--;
+      expanded++;
+      if (spill >= 0) sinceSpill++;
+      const cy = Math.floor(k / layer);
+      const cz = Math.floor((k - cy * layer) / sx);
+      expand(k - cy * layer - cz * sx, cy, cz, false);
+    }
+    for (let i = Math.max(lowest, 0); i < levels.length; i++) if (levels[i]) (levels[i] as number[]).length = 0;
+
+    // No room inside the body, as far as was looked: it rises where it can, and failing a body, the water
+    // goes into the open round the block itself (a puddle squeezed aside, or lifted onto what was put in it).
+    if (units > 0 && spill >= 0) own.unshift(spill);
+    for (let i = 0; i < own.length && units > 0; i++) {
+      const k = own[i] as number;
+      const cy = Math.floor(k / layer);
+      const cz = Math.floor((k - cy * layer) / sx);
+      units -= this.put(k - cy * layer - cz * sx, cy, cz, units);
     }
     this.lost += units;
   }

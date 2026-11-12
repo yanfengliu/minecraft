@@ -247,6 +247,24 @@ describe('pathfinding', () => {
     expect(far.status).toBe(PATH_FAILED);
     expect(more).toBeLessThan(120);
 
+    // The same holds at a budget too small to share out: two expansions a tick, and a short walk asked for
+    // every tick. The long search takes every other tick whole, and ends.
+    const open = createFlatWorld(96, 96, 31);
+    // What the long search costs when it has the service to itself.
+    const alone = new Navigator(open);
+    expect(find(alone, [5, G, 20], [60, G, 20])).not.toBeNull();
+    const cost = alone.stats.expansions;
+    const mean = new Navigator(open, { budgetPerTick: 2 });
+    const long = mean.request(5, G, 20, 60, G, 20, false);
+    let waited = 0;
+    // Two expansions on every other tick: twice its cost in ticks, and a margin.
+    while (long.status === PATH_PENDING && waited < cost * 2 + 100) {
+      mean.request(20, G, 60, 20 + 13 + (waited % 5), G, 60 + (waited % 3), false);
+      mean.update();
+      waited++;
+    }
+    expect(long.status).toBe(PATH_FOUND);
+
     // However far the goal, a search's allowance has a ceiling: an unreachable corner of the map is given up
     // on, where it would otherwise be searched for with the whole budget for as long as the distance allowed.
     const big = createFlatWorld(768, 768, 31);

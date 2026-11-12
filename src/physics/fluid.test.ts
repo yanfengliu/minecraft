@@ -237,6 +237,50 @@ describe('fluid', () => {
     expect(WATER_LEVEL[world.get(40, top + 1, 40)]).toBe(16);
   });
 
+  it('raises a deep pool from a block set at its bottom', () => {
+    const world = createFlatWorld(64, 64, GROUND);
+    const { fluid } = setup(world);
+    // A full pool nine by nine and twelve deep, open above: 972 cells, and the surface eleven cells above
+    // a block set in the middle of its floor. A search that spread evenly gave up long before the top.
+    basin(world, 20, 20, 28, 28, 13);
+    fill(world, 20, GROUND + 1, 20, 28, GROUND + 12, 28, waterState(16));
+    settle(fluid, 50);
+    const deep = totalUnits(world);
+    expect(deep).toBe(81 * 12 * 16);
+    world.set(24, GROUND + 1, 24, B.stone);
+    expect(fluid.lost).toBe(0);
+    expect(totalUnits(world)).toBe(deep);
+    settle(fluid, 400);
+    expect(totalUnits(world)).toBe(deep);
+    // It went on top, inside the walls.
+    let above = 0;
+    for (let z = 20; z <= 28; z++) for (let x = 20; x <= 28; x++) above += WATER_LEVEL[world.get(x, GROUND + 13, z)] as number;
+    expect(above).toBe(16);
+  });
+
+  it('keeps displaced water in a pool that has room, rather than lifting it onto the block', () => {
+    const world = createFlatWorld(64, 64, GROUND);
+    const { fluid } = setup(world);
+    // A trough three cells long and one deep, not quite full. A block set in one end pushes its water along
+    // the trough, where there is room for it. It is not lifted onto the block, from where it ran off over the rim.
+    basin(world, 40, 40, 42, 40, 1);
+    world.set(40, GROUND + 1, 40, waterState(11));
+    world.set(41, GROUND + 1, 40, waterState(11));
+    world.set(42, GROUND + 1, 40, waterState(10));
+    settle(fluid, 100);
+    const trough = (): number => columnUnits(world, 40, 40, GROUND + 1, GROUND + 1) + columnUnits(world, 41, 40, GROUND + 1, GROUND + 1) + columnUnits(world, 42, 40, GROUND + 1, GROUND + 1);
+    expect(trough()).toBe(32);
+    const all = totalUnits(world);
+    const first = WATER_LEVEL[world.get(40, GROUND + 1, 40)] as number;
+    world.set(40, GROUND + 1, 40, B.stone);
+    settle(fluid, 200);
+    expect(fluid.lost).toBe(0);
+    expect(totalUnits(world)).toBe(all);
+    expect(first).toBeGreaterThan(0);
+    expect(trough()).toBe(32);
+    expect(WATER_LEVEL[world.get(40, GROUND + 2, 40)]).toBe(0);
+  });
+
   it('moves water aside when anything is put where it stands, and loses none', () => {
     const world = createFlatWorld(64, 64, GROUND);
     const { fluid, events } = setup(world);

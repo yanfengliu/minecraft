@@ -123,6 +123,8 @@ export class Navigator {
   private quick: AStar | null = null;
 
   private budget: number;
+  /** Calls of `pump` on which the budget was too small to share: the two queues take them in turn. */
+  private turn = 0;
 
   private readonly routes = new Map<number, Map<number, Path>>();
   private routeCount = 0;
@@ -274,7 +276,11 @@ export class Navigator {
    */
   private pump(): void {
     const far = this.far;
-    const reserve = far.active || far.head < far.queue.length ? Math.floor(this.budget * FAR_SHARE) : 0;
+    const farBusy = far.active !== null || far.head < far.queue.length;
+    let reserve = farBusy ? Math.floor(this.budget * FAR_SHARE) : 0;
+    // A budget too small to share goes to the long search whole on every other call, so that a stream of
+    // short walks cannot starve it, nor it them.
+    if (farBusy && reserve === 0 && this.budget > 0 && (this.turn++ & 1) === 1) reserve = this.budget;
     this.budget = reserve + this.serve(this.near, this.budget - reserve);
     this.budget = this.serve(far, this.budget);
     if (this.budget > 0) this.budget = this.serve(this.near, this.budget);

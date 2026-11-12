@@ -151,6 +151,35 @@ test('the player walks, jumps and lands under real key presses', async ({ page }
   expect(landed.ground).toBe(true);
 });
 
+test('a panel opens on its key and its buttons answer the keyboard', async ({ page }) => {
+  await boot(page);
+  const step = (seconds: number): Promise<void> => page.evaluate((s) => window.__tidewick!.step(s), seconds);
+  const open = (): Promise<string | null> => page.evaluate(() => window.__tidewick!.game!.hud.open);
+  // Enter acts when the key goes down, and so does Space, whose click a browser would make on its release.
+  for (const key of ['Enter', 'Space']) {
+    await page.keyboard.press('KeyH');
+    await step(0.05);
+    expect(await open()).toBe('help');
+    await page.locator('.panel button.close').focus();
+    await page.keyboard.down(key);
+    expect(await open(), `${key} on the Close button`).toBeNull();
+    await page.keyboard.up(key);
+    await step(0.05);
+    // One press is one action: the release did not open it again or act on anything else.
+    expect(await open()).toBeNull();
+  }
+  // With a panel open the game's own keys are the panel's: F does not start the player flying.
+  await page.keyboard.press('KeyH');
+  await step(0.05);
+  const flying = await page.evaluate(() => window.__tidewick!.game!.player.flying);
+  await page.keyboard.press('KeyF');
+  await step(0.05);
+  expect(await page.evaluate(() => window.__tidewick!.game!.player.flying)).toBe(flying);
+  await page.keyboard.press('Escape');
+  await step(0.05);
+  expect(await open()).toBeNull();
+});
+
 test('a frame fits the 60 Hz budget at 1280 x 720', async ({ page }) => {
   test.skip(SOFTWARE, 'no GPU on this host');
   await boot(page);
