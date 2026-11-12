@@ -2,8 +2,8 @@
 // then the first full lighting. Runs in the generation worker at load and in
 // Node for tests. Headless and deterministic for a given config.
 
-import type { VillagePlan } from '../../sim/api';
 import { LightEngine } from '../light';
+import { type VillagePlan, validateVillagePlan } from '../plan';
 import { isStandable } from '../walk';
 import type { World } from '../world';
 import { fillWorld, plantFlora } from './fill';
@@ -30,8 +30,13 @@ export type VillageBuilder = (world: World, terrain: Terrain, reserved: Uint8Arr
 
 /**
  * Build the island. `buildVillage` lays out and constructs the village and
- * marks the columns it claims in `reserved` so flora stays off roads, fields
- * and roofs; without it the shelf is left as open meadow.
+ * marks the columns it claims in `reserved` (1 for ground it has made, 2 for
+ * ground under a roof) so flora stays off roads, fields and buildings;
+ * without it the shelf is left as open meadow.
+ *
+ * Throws, naming what is wrong, if the village built does not match the plan
+ * returned for it: the simulation takes the plan on trust, so a fault is
+ * stopped here rather than met later as a resident walking into a wall.
  */
 export function generateIsland(config: IslandConfig, buildVillage?: VillageBuilder, now: () => number = () => 0): Island {
   const timings: Record<string, number> = {};
@@ -55,6 +60,14 @@ export function generateIsland(config: IslandConfig, buildVillage?: VillageBuild
   lap('heightmap');
   new LightEngine(world).computeAll();
   lap('light');
+  if (plan) {
+    const problems = validateVillagePlan(world, plan);
+    if (problems.length > 0) {
+      const shown = problems.slice(0, 8).join('; ') + (problems.length > 8 ? `; and ${problems.length - 8} more` : '');
+      throw new Error(`the village generated for seed ${config.seed} on a ${config.sx} by ${config.sz} island does not match its plan: ${shown}`);
+    }
+    lap('validate');
+  }
   world.trackDirty = true;
 
   // Spawn at the village centre if there is one, otherwise on the shelf.

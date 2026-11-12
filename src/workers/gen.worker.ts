@@ -1,10 +1,10 @@
 // Generation worker entry: builds the island off the main thread and hands the
 // finished world back as transferable arrays.
 
-import type { VillagePlan } from '../sim/api';
 import { type IslandInfo, generateIsland } from '../world/gen/island';
 import type { IslandConfig } from '../world/gen/terrain';
 import { buildVillage } from '../world/gen/village';
+import type { VillagePlan } from '../world/plan';
 import type { WorldData } from '../world/world';
 
 export interface GenResult {

@@ -4,7 +4,7 @@
 import { clamp } from '../../core/math';
 import { fbm2 } from '../../core/noise';
 import { Rng, hash2i, rand2 } from '../../core/rng';
-import { B, SOLID } from '../blocks';
+import { B, IS_LEAVES, IS_LOG, SOLID } from '../blocks';
 import { World } from '../world';
 import {
   BIOME_BEACH, BIOME_FOREST, BIOME_HIGHLAND, BIOME_MEADOW, BIOME_PINE, BIOME_ROCK, BIOME_SEA, BIOME_SNOW,
@@ -123,9 +123,11 @@ function carveCaves(world: World, t: Terrain): void {
   const { sx, sz, seaLevel, seed } = t.config;
   const rng = new Rng(seed ^ 0xca7e);
   const count = Math.round((sx * sz) / 14000);
+  // Every column the tunnel could open, and two beyond: looked at only every fifth column, a river three
+  // blocks wide passed between the looks and the tunnel was cut into its bank.
   const dry = (x: number, z: number): boolean => {
-    for (let dz = -5; dz <= 5; dz += 5) {
-      for (let dx = -5; dx <= 5; dx += 5) {
+    for (let dz = -5; dz <= 5; dz++) {
+      for (let dx = -5; dx <= 5; dx++) {
         const qx = clamp(x + dx, 0, sx - 1);
         const qz = clamp(z + dz, 0, sz - 1);
         if ((t.water[qz * sx + qx] as number) >= 0) return false;
@@ -175,7 +177,11 @@ function carveCaves(world: World, t: Terrain): void {
   }
 }
 
-/** Trees and ground plants. Skips columns the village has claimed in `reserved`. */
+/**
+ * Trees and ground plants. Nothing is planted on a column the village has claimed in `reserved`, and no
+ * crown is left hanging into one where it would be in the way: the three cells over claimed ground (room to
+ * walk, and to step up) are kept free of branches, and so is everything over a column marked 2, under a roof.
+ */
 export function plantFlora(world: World, t: Terrain, reserved: Uint8Array | null): void {
   const { sx, sz, seed } = t.config;
   const rng = new Rng(seed ^ 0xf10a);
@@ -211,6 +217,23 @@ export function plantFlora(world: World, t: Terrain, reserved: Uint8Array | null
       if (b === BIOME_PINE || b === BIOME_HIGHLAND) species = rand2(x, z, seed + 4) < 0.88 ? 'pine' : 'birch';
       else species = fbm2(patch, x / 60, z / 60, 2) + rand2(x, z, seed + 4) * 0.5 > 0.42 ? 'birch' : 'oak';
       growTree(world, x, y + 1, z, species, rng, true);
+    }
+  }
+
+  // A trunk keeps off claimed ground, but its crown spreads: on a slope it reached into the road beside it at
+  // head height, and through the wall of a house.
+  if (reserved) {
+    for (let i = 0; i < reserved.length; i++) {
+      // Not over water: what is claimed there is a bridge, and its posts are logs.
+      if (!reserved[i] || (t.water[i] as number) >= 0) continue;
+      const x = i % sx;
+      const z = (i - x) / sx;
+      const ground = t.height[i] as number;
+      const top = reserved[i] === 2 ? world.sy - 1 : ground + 3;
+      for (let y = ground + 1; y <= top; y++) {
+        const s = world.get(x, y, z);
+        if (IS_LEAVES[s] || IS_LOG[s]) world.setRaw(x, y, z, B.air);
+      }
     }
   }
 
