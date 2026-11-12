@@ -305,6 +305,64 @@ describe('pathfinding', () => {
     nav.dispose();
   });
 
+  it('forgets what a step cost when the ground changes kind, though it stands no higher or lower', () => {
+    const world = createFlatWorld(64, 64, 31);
+    // A made path straight from one end to the other, over open grass.
+    for (let x = 12; x <= 38; x++) world.set(x, 31, 25, B.path);
+    const nav = new Navigator(world);
+    const onto = (p: Path, state: number): number => {
+      let n = 0;
+      for (let i = 0; i < p.length; i++) if (world.get(p.xs[i]!, p.ys[i]! - 1, p.zs[i]!) === state) n++;
+      return n;
+    };
+    const first = find(nav, [14, G, 25], [36, G, 25]);
+    expect(first).not.toBeNull();
+    expect(onto(first!, B.path)).toBe(first!.length);
+    // Farther apart than a straight line is tried without a search, so this one is searched, and its costs remembered.
+    const outer = find(nav, [12, G, 25], [38, G, 25]);
+    expect(onto(outer!, B.path)).toBe(outer!.length);
+
+    // The middle of the path is ploughed up: a block as high as the path was, and five times as dear to cross.
+    for (let x = 20; x <= 30; x++) world.set(x, 31, 25, B.farmland);
+    expect(first!.stale).toBe(true);
+    const again = find(nav, [14, G, 25], [36, G, 25]);
+    expect(again).not.toBe(first);
+    expect(illegalStep(world, again!)).toBe('');
+    expect(onto(again!, B.farmland)).toBe(0);
+    // And a route asked for the first time walks round it too: the cost of those cells was not left as it was.
+    const fresh = find(nav, [13, G, 25], [37, G, 25]);
+    expect(onto(fresh!, B.farmland)).toBe(0);
+    expect(onto(fresh!, B.path)).toBeGreaterThan(8);
+    nav.dispose();
+  });
+
+  it('forgets what a step cost when water comes into a cell, and when it goes', () => {
+    const world = createFlatWorld(64, 64, 31);
+    const nav = new Navigator(world);
+    const wet = (p: Path): number => {
+      let n = 0;
+      for (let i = 0; i < p.length; i++) if (world.get(p.xs[i]!, p.ys[i]!, p.zs[i]!) !== B.air) n++;
+      return n;
+    };
+    const dry = find(nav, [10, G, 30], [40, G, 30]);
+    expect(dry!.length).toBe(31);
+    // A puddle across the way, ankle deep: it can be waded, at a price, and there is dry ground to either side.
+    for (let x = 24; x <= 26; x++) for (let z = 27; z <= 33; z++) world.set(x, G, z, waterState(4));
+    expect(dry!.stale).toBe(true);
+    const round = find(nav, [10, G, 30], [40, G, 30]);
+    expect(round).not.toBe(dry);
+    expect(illegalStep(world, round!)).toBe('');
+    expect(wet(round!)).toBe(0);
+    expect(wet(find(nav, [11, G, 30], [39, G, 30])!)).toBe(0);
+
+    // Then it dries up, and the straight way is the way again.
+    for (let x = 24; x <= 26; x++) for (let z = 27; z <= 33; z++) world.set(x, G, z, B.air);
+    const straight = find(nav, [10, G, 30], [40, G, 30]);
+    expect(straight!.length).toBe(31);
+    expect(find(nav, [11, G, 30], [39, G, 30])!.length).toBe(29);
+    nav.dispose();
+  });
+
   it('finds the nearest standable cell beside an obstacle', () => {
     const world = createFlatWorld(64, 64, 31);
     world.set(10, G, 10, B.stone);

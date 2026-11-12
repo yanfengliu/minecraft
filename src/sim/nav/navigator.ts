@@ -53,17 +53,31 @@ export interface NavStats {
 
 /**
  * What a state means to a walker, reduced to one number: two states with the
- * same signature are interchangeable for standing and passing, so swapping one
- * for the other (a door opening, a crop growing, a lantern lit) leaves every
- * cached route valid.
+ * same signature are interchangeable for standing, for passing and for what a
+ * step costs, so swapping one for the other (a door opening, a crop growing, a
+ * lantern lit, soil wetted) leaves the remembered costs and every cached route
+ * as good as they were. The signature is made from exactly what `standHeight`,
+ * `walkCost` and the doorway surcharge read from a state, and from all of it:
+ * a path ploughed into farmland stands as high as before and costs five times
+ * as much to cross, and a cell of open ground costs more to wade with every
+ * sixteenth of water that comes into it.
  */
 const WALK_SIGNATURE = (() => {
   const sig = new Uint16Array(STATE_COUNT);
+  const ids = new Map<string, number>();
   for (let s = 0; s < STATE_COUNT; s++) {
-    if (isDoor(s)) sig[s] = 1;
-    else if (isGate(s)) sig[s] = 2;
-    else if (!SOLID[s]) sig[s] = (WATER_LEVEL[s] as number) > WADE_LEVEL ? 3 : 0;
-    else sig[s] = 8 + Math.round((TOP_HEIGHT[s] as number) * 16) * 2 + ((WALK_COST[s] as number) > 0 ? 1 : 0);
+    const water = WATER_LEVEL[s] as number;
+    let key: string;
+    if (isDoor(s)) key = 'door';
+    else if (isGate(s)) key = 'gate';
+    else if (SOLID[s]) key = `solid ${TOP_HEIGHT[s]} ${WALK_COST[s]}`;
+    else key = water > WADE_LEVEL ? 'deep' : `open ${water}`;
+    let id = ids.get(key);
+    if (id === undefined) {
+      id = ids.size;
+      ids.set(key, id);
+    }
+    sig[s] = id;
   }
   return sig;
 })();
