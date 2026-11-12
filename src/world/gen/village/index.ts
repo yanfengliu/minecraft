@@ -5,8 +5,8 @@
 
 import { clamp } from '../../../core/math';
 import { Rng } from '../../../core/rng';
-import type { Area, Building, BuildingKind, Cell, CropName, Field, Pen, Stall, VillagePlan } from '../../../sim/api';
 import { B, gateState } from '../../blocks';
+import type { Area, Building, BuildingKind, Cell, CropName, Field, Pen, Stall, VillagePlan } from '../../plan';
 import type { World } from '../../world';
 import { BIOME_FOREST, BIOME_HIGHLAND, BIOME_MEADOW, BIOME_PINE, type Terrain } from '../terrain';
 import { SPECS, buildShell, furnish } from './buildings';
@@ -17,6 +17,7 @@ const E = 1;
 const S = 2;
 const W = 3;
 const STEP: readonly (readonly [number, number])[] = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+const ARM_NAME = ['North', 'East', 'South', 'West'];
 
 interface Slot {
   /** Which road arm the lot is on, how far along it the door is, and which side (-1 or 1). */
@@ -43,6 +44,8 @@ const SLOTS: Slot[] = [
 
 /** How far each road runs from the centre: north, east, south, west. */
 const ARM_LENGTH = [52, 60, 46, 60];
+/** Half the width of the cobbled square. */
+const SQUARE = 8;
 const CROPS: CropName[] = ['wheat', 'barley', 'turnip', 'cabbage'];
 
 export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): VillagePlan | null {
@@ -59,6 +62,12 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
   const ground = (x: number, z: number): number => (inside(x, z) ? (t.height[at(x, z)] as number) : seaLevel);
   /** Top-block height of every road cell, or -1. */
   const roadY = new Int16Array(sx * sz).fill(-1);
+  /**
+   * What stands where once a building is up: 1 on every column under its roof, eaves included, and 2 on
+   * its doorstep. A lot that will not fit where it was drawn is moved along its road, so nothing built
+   * afterwards can take a building's place for granted: each stage asks here before it cuts or builds.
+   */
+  const built = new Uint8Array(sx * sz);
 
   /** Cut or fill one column so its top block is `top` at height y, with clear air above. Leaves water alone. */
   const level = (x: number, z: number, y: number, top: number): void => {
@@ -113,17 +122,17 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
   };
 
   // --- the square ---
-  for (let dz = -8; dz <= 8; dz++) {
-    for (let dx = -8; dx <= 8; dx++) level(cx + dx, cz + dz, base, rng.chance(0.08) ? B.mossy_cobble : B.cobble);
+  for (let dz = -SQUARE; dz <= SQUARE; dz++) {
+    for (let dx = -SQUARE; dx <= SQUARE; dx++) level(cx + dx, cz + dz, base, rng.chance(0.08) ? B.mossy_cobble : B.cobble);
   }
-  for (let dz = -8; dz <= 8; dz++) for (let dx = -8; dx <= 8; dx++) roadY[at(cx + dx, cz + dz)] = base;
+  for (let dz = -SQUARE; dz <= SQUARE; dz++) for (let dx = -SQUARE; dx <= SQUARE; dx++) roadY[at(cx + dx, cz + dz)] = base;
 
   // --- the four roads ---
   const armEnd: Cell[] = [];
   for (let arm = 0; arm < 4; arm++) {
     const [ax, az] = STEP[arm] as readonly [number, number];
     const len = ARM_LENGTH[arm] as number;
-    const endY = road(cx + ax * 9, cz + az * 9, cx + ax * len, cz + az * len, 1, B.path, base);
+    const endY = road(cx + ax * (SQUARE + 1), cz + az * (SQUARE + 1), cx + ax * len, cz + az * len, 1, B.path, base);
     armEnd.push({ x: cx + ax * len, y: endY + 1, z: cz + az * len });
   }
 
@@ -145,13 +154,16 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
       if (g < 0) continue;
       const frame0 = new Frame(world, rx + ox * 3, g, rz + oz * 3, facing);
       const f = new Frame(world, frame0.x(-doorX, 0), g, frame0.z(-doorX, 0), facing);
-      // The lot must be dry land that is not wildly off the road's level.
+      // The lot must be dry land that is not wildly off the road's level, and the building itself must
+      // stand clear of the square, where the well, the stalls and the lamps go.
       let ok = true;
       for (let lz = -1; lz <= spec.d + 1 && ok; lz++) {
         for (let lx = -2; lx <= spec.w + 1; lx++) {
           const x = f.x(lx, lz);
           const z = f.z(lx, lz);
-          if (wet(x, z) || Math.abs(ground(x, z) - g) > 5 || (lz >= 0 && reserved[at(x, z)] === 1 && roadY[at(x, z)] < 0)) {
+          const roofed = lx >= -1 && lx <= spec.w && lz <= spec.d;
+          if (wet(x, z) || Math.abs(ground(x, z) - g) > 5 || (lz >= 0 && reserved[at(x, z)] === 1 && roadY[at(x, z)] < 0)
+            || (roofed && Math.abs(x - cx) <= SQUARE && Math.abs(z - cz) <= SQUARE)) {
             ok = false;
             break;
           }
@@ -171,20 +183,21 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
       // Doorstep: a path block between the door and the road.
       const step = f.cell(doorX, 0, -1);
       put(step.x, step.y, step.z, B.path);
+      for (let lz = -1; lz <= spec.d; lz++) for (let lx = -1; lx <= spec.w; lx++) built[at(f.x(lx, lz), f.z(lx, lz))] = 1;
+      built[at(step.x, step.z)] = 2;
       const a = f.cell(0, 0, 0);
       const b = f.cell(spec.w - 1, 0, spec.d - 1);
       const id = buildings.length;
       const count = buildings.filter((q) => q.kind === slot.kind).length;
       buildings.push({
         id, kind: slot.kind,
-        name: slot.kind === 'house' ? `Cottage ${count + 1}` : slot.kind === 'farm' ? `${count === 0 ? 'East' : 'West'} farm` : spec.label,
+        name: slot.kind === 'house' ? `Cottage ${count + 1}` : slot.kind === 'farm' ? `${ARM_NAME[slot.arm]} farm` : spec.label,
         x0: Math.min(a.x, b.x), z0: Math.min(a.z, b.z), x1: Math.max(a.x, b.x), z1: Math.max(a.z, b.z),
         floorY: g + 1, entry: f.cell(doorX, 1, -1), door: f.cell(doorX, 1, 0), chimney, ...parts,
       });
       break;
     }
   }
-  const idOf = (kind: BuildingKind, nth = 0): number => buildings.filter((q) => q.kind === kind)[nth]?.id ?? buildings[0]?.id ?? 0;
 
   // --- well, stalls, lamps ---
   put(cx, base, cz, B.water_source);
@@ -211,30 +224,49 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
   }
 
   const lamps: Cell[] = [];
-  const lamp = (x: number, z: number): void => {
+  /** A lantern on a post, if there is room for one here. Never on a doorstep: the post would shut the door. */
+  const lamp = (x: number, z: number): boolean => {
+    if (wet(x, z) || built[at(x, z)] === 2) return false;
     const y = roadY[at(x, z)] >= 0 ? (roadY[at(x, z)] as number) : ground(x, z);
-    if (wet(x, z) || world.get(x, y + 1, z) !== B.air) return;
+    if (world.get(x, y + 1, z) !== B.air) return false;
     put(x, y + 1, z, B.fence);
     put(x, y + 2, z, B.fence);
     put(x, y + 3, z, B.lantern);
     reserved[at(x, z)] = 1;
     lamps.push({ x, y: y + 3, z });
+    return true;
   };
-  for (const [dx, dz] of [[-8, -8], [8, -8], [-8, 8], [8, 8]] as const) lamp(cx + dx, cz + dz);
+  for (const [dx, dz] of [[-SQUARE, -SQUARE], [SQUARE, -SQUARE], [-SQUARE, SQUARE], [SQUARE, SQUARE]] as const) lamp(cx + dx, cz + dz);
   for (let arm = 0; arm < 4; arm++) {
     const [ax, az] = STEP[arm] as readonly [number, number];
     for (const along of [21, 34, 45]) {
       if (along >= (ARM_LENGTH[arm] as number)) continue;
-      // Just off the road's edge, on alternating sides.
+      // Just off the road's edge, on alternating sides, and a step or two along if that spot is taken.
       const side = along === 34 ? -2 : 2;
-      lamp(cx + ax * along + (az !== 0 ? side : 0), cz + az * along + (ax !== 0 ? side : 0));
+      for (const slide of [0, 1, -1, 2, -2]) {
+        const a = along + slide;
+        if (lamp(cx + ax * a + (az !== 0 ? side : 0), cz + az * a + (ax !== 0 ? side : 0))) break;
+      }
     }
   }
 
   // --- fields: two arms are carried on past their last house, a field either side of each ---
   const fields: Field[] = [];
-  /** Roughness of the ground a pair of fields would take, `from` cells out along an arm; Infinity if any of it is wet. */
+  /** True when the ground a pair of fields and their stretch of road would take is dry and has nothing built on it. */
+  const zoneFree = (arm: number, from: number): boolean => {
+    const [ax, az] = STEP[arm] as readonly [number, number];
+    for (let a = from + 1; a <= from + 19; a++) {
+      for (let o = -14; o <= 14; o++) {
+        const x = cx + ax * a + (az !== 0 ? o : 0);
+        const z = cz + az * a + (ax !== 0 ? o : 0);
+        if (wet(x, z) || built[at(x, z)] !== 0) return false;
+      }
+    }
+    return true;
+  };
+  /** Roughness of the ground a pair of fields would take, `from` cells out along an arm; Infinity if they cannot go there. */
   const zoneScore = (arm: number, from: number): number => {
+    if (!zoneFree(arm, from)) return Infinity;
     const [ax, az] = STEP[arm] as readonly [number, number];
     let lo = Infinity;
     let hi = -Infinity;
@@ -250,8 +282,10 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
     return hi - lo;
   };
   // Take pairs of fields from the gentlest ground first, a second pair further out the same road if needed.
+  // A field belongs to a farm: the farms that got built share them, and with no farm there are none.
+  const farms = buildings.filter((q) => q.kind === 'farm');
   const zones: { arm: number; len: number }[] = [];
-  for (const arm of [E, W, N].sort((p, q) => zoneScore(p, ARM_LENGTH[p] as number) - zoneScore(q, ARM_LENGTH[q] as number))) {
+  for (const arm of farms.length === 0 ? [] : [E, W, N].sort((p, q) => zoneScore(p, ARM_LENGTH[p] as number) - zoneScore(q, ARM_LENGTH[q] as number))) {
     for (const extra of [0, 19]) {
       const len = (ARM_LENGTH[arm] as number) + extra;
       if (zones.length >= 2 || zoneScore(arm, len) >= 16) break;
@@ -290,18 +324,28 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
       }
       // The cell between the gate and the road's edge.
       level(gx - (az !== 0 ? side : 0), gz - (ax !== 0 ? side : 0), g, B.path);
-      fields.push({ id: fields.length, owner: idOf('farm', fields.length % 2), crop: CROPS[fields.length % 4] as CropName, x0, z0, x1, z1, y: g });
+      const owner = (farms[fields.length % farms.length] as Building).id;
+      fields.push({ id: fields.length, owner, crop: CROPS[fields.length % 4] as CropName, x0, z0, x1, z1, y: g });
     }
   }
 
   // --- pens beside the shepherd, on a lane off the south road ---
   const pens: Pen[] = [];
   const shepherd = buildings.find((q) => q.kind === 'shepherd');
+  /** True when a lane off the south road in this row, and the pens either side of it, would lie on dry ground that nothing else has taken. */
+  const laneFree = (laneZ: number): boolean => {
+    if (roadY[at(cx + 1, laneZ)] < 0) return false;
+    for (let x = cx + 2; x <= cx + 24; x++) {
+      // The lane leaves the road between two lots, whose margins it may cross but whose buildings it may not.
+      if (built[at(x, laneZ)] !== 0) return false;
+      for (let z = laneZ - 10; z <= laneZ + 7; z++) if (wet(x, z) || (reserved[at(x, z)] === 1 && x > cx + 11)) return false;
+    }
+    return true;
+  };
   if (shepherd) {
-    const laneZ = cz + 29;
-    let dry = true;
-    for (let x = cx + 2; x <= cx + 24 && dry; x++) for (let z = cz + 19; z <= cz + 36; z++) if (wet(x, z) || reserved[at(x, z)] === 1 && x > cx + 11) dry = false;
-    if (dry && roadY[at(cx + 1, laneZ)] >= 0) {
+    // Between the shepherd's lot and the next one down the road, wherever those two have ended up.
+    const laneZ = [29, 30, 28, 31, 27, 32].map((d) => cz + d).find(laneFree);
+    if (laneZ !== undefined) {
       road(cx + 2, laneZ, cx + 23, laneZ, 0, B.path, roadY[at(cx + 1, laneZ)] as number);
       const pen = (animal: Pen['animal'], x0: number, z0: number, x1: number, z1: number, gateX: number, gateZ: number): void => {
         // Level with the lane at the gate, so animals and people walk straight in.
@@ -317,8 +361,8 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
         put(x1, g + 1, gateZ < laneZ ? z0 : z1, B.trough);
         pens.push({ id: pens.length, owner: shepherd.id, animal, x0, z0, x1, z1, y: g + 1, gate: { x: gateX, y: g + 1, z: gateZ }, outside: { x: gateX, y: g + 1, z: laneZ } });
       };
-      pen('sheep', cx + 13, cz + 21, cx + 21, cz + 27, cx + 17, cz + 28);
-      pen('chicken', cx + 13, cz + 31, cx + 17, cz + 34, cx + 15, cz + 30);
+      pen('sheep', cx + 13, laneZ - 8, cx + 21, laneZ - 2, cx + 17, laneZ - 1);
+      pen('chicken', cx + 13, laneZ + 2, cx + 17, laneZ + 5, cx + 15, laneZ + 1);
     }
   }
 
@@ -446,6 +490,9 @@ export function buildVillage(world: World, t: Terrain, reserved: Uint8Array): Vi
     patrol.push(standOnRoad(cx + ax * far, cz + az * far));
   }
   const gathering: Cell[] = [[-4, -2], [4, -2], [-4, 2], [4, 2], [-2, 7], [2, 7], [-7, 0], [7, 0]].map(([dx, dz]) => ({ x: cx + (dx as number), y: base + 1, z: cz + (dz as number) }));
+
+  // Tell the flora which claimed columns are under a roof: no branch belongs over those at any height.
+  for (let i = 0; i < built.length; i++) if (built[i] !== 0) reserved[i] = 2;
 
   return {
     name: 'Tidewick',

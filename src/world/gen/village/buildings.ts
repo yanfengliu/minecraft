@@ -9,8 +9,8 @@
 //   the row in front of the beds is always kept clear to stand in
 
 import type { Rng } from '../../../core/rng';
-import type { Bed, BuildingKind, Cell, WorkSpot } from '../../../sim/api';
 import { B } from '../../blocks';
+import type { Bed, BuildingKind, Cell, WorkSpot } from '../../plan';
 import { BACK, FRONT, type Frame, LEFT, RIGHT } from './frame';
 
 export interface Style {

@@ -493,9 +493,11 @@ export const B = {
     for (let axis = 0; axis < 2; axis++) {
       const closed = [box(0, 5, 7, 2, 16, 9), box(14, 5, 7, 16, 16, 9), box(2, 6, 7, 14, 9, 9), box(2, 12, 7, 14, 15, 9)];
       const open = [box(0, 5, 7, 2, 16, 9), box(14, 5, 7, 16, 16, 9), box(0, 6, 9, 2, 9, 16), box(0, 12, 9, 2, 15, 16), box(14, 6, 9, 16, 9, 16), box(14, 12, 9, 16, 15, 16)];
+      // Like the fence it hangs in, a shut gate is not something to stand on: an animal that could step up onto
+      // it would walk out of its pen.
       const c = register('gate', axis * 2, {
         shape: SHAPE_BOXES, tiles, boxes: rotateBoxes(closed, axis), collision: rotateBoxes([box(0, 0, 6, 16, 24, 10)], axis),
-        mat: MAT.wood, connect: CONNECT_FENCE,
+        mat: MAT.wood, connect: CONNECT_FENCE, walkCost: 0,
       });
       register('gate', axis * 2 + 1, {
         shape: SHAPE_BOXES, tiles, boxes: rotateBoxes(open, axis), collision: 'none', mat: MAT.wood, connect: CONNECT_FENCE, drop: 'gate',
@@ -537,14 +539,14 @@ export const B = {
     collision: 'none', mat: MAT.wood, emit: 14, drop: 'torch',
   })),
   lantern: litPair('lantern',
-    { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('lantern_frame'), boxes: [box(5, 0, 5, 11, 1, 11), box(6, 1, 6, 10, 8, 10, all('lantern_off')), box(5, 8, 5, 11, 9, 11), box(7, 9, 7, 9, 11, 9)], collision: [box(5, 0, 5, 11, 9, 11)], mat: MAT.metal, hardness: 0.4 },
-    { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('lantern_frame'), boxes: [box(5, 0, 5, 11, 1, 11), box(6, 1, 6, 10, 8, 10, all('lantern_glow')), box(5, 8, 5, 11, 9, 11), box(7, 9, 7, 9, 11, 9)], collision: [box(5, 0, 5, 11, 9, 11)], mat: MAT.metal, hardness: 0.4, emit: 13 }),
+    { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('lantern_frame'), boxes: [box(5, 0, 5, 11, 1, 11), box(6, 1, 6, 10, 8, 10, all('lantern_off')), box(5, 8, 5, 11, 9, 11), box(7, 9, 7, 9, 11, 9)], collision: [box(5, 0, 5, 11, 9, 11)], mat: MAT.metal, hardness: 0.4, walkCost: 0 },
+    { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('lantern_frame'), boxes: [box(5, 0, 5, 11, 1, 11), box(6, 1, 6, 10, 8, 10, all('lantern_glow')), box(5, 8, 5, 11, 9, 11), box(7, 9, 7, 9, 11, 9)], collision: [box(5, 0, 5, 11, 9, 11)], mat: MAT.metal, hardness: 0.4, emit: 13, walkCost: 0 }),
   hanging_lantern: litPair('hanging_lantern',
     { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('lantern_frame'), boxes: [box(6, 5, 6, 10, 12, 10, all('lantern_off')), box(5, 12, 5, 11, 13, 11), box(5, 4, 5, 11, 5, 11), box(7, 13, 7, 9, 16, 9)], collision: 'none', mat: MAT.metal, hardness: 0.4 },
     { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('lantern_frame'), boxes: [box(6, 5, 6, 10, 12, 10, all('lantern_glow')), box(5, 12, 5, 11, 13, 11), box(5, 4, 5, 11, 5, 11), box(7, 13, 7, 9, 16, 9)], collision: 'none', mat: MAT.metal, hardness: 0.4, emit: 13 }),
   campfire: litPair('campfire',
-    { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('charred_log'), boxes: [box(1, 0, 5, 15, 3, 8), box(1, 0, 9, 15, 3, 12), box(5, 2, 1, 8, 5, 15), box(9, 2, 1, 12, 5, 15)], collision: [box(1, 0, 1, 15, 5, 15)], mat: MAT.wood, hardness: 0.6 },
-    { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('charred_log'), boxes: [box(1, 0, 5, 15, 3, 8), box(1, 0, 9, 15, 3, 12), box(5, 2, 1, 8, 5, 15), box(9, 2, 1, 12, 5, 15), box(5, 5, 5, 11, 13, 11, all('flame'))], collision: [box(1, 0, 1, 15, 5, 15)], mat: MAT.wood, hardness: 0.6, emit: 15 }),
+    { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('charred_log'), boxes: [box(1, 0, 5, 15, 3, 8), box(1, 0, 9, 15, 3, 12), box(5, 2, 1, 8, 5, 15), box(9, 2, 1, 12, 5, 15)], collision: [box(1, 0, 1, 15, 5, 15)], mat: MAT.wood, hardness: 0.6, walkCost: 0 },
+    { shape: SHAPE_BOXES, layer: LAYER_CUTOUT, tiles: all('charred_log'), boxes: [box(1, 0, 5, 15, 3, 8), box(1, 0, 9, 15, 3, 12), box(5, 2, 1, 8, 5, 15), box(9, 2, 1, 12, 5, 15), box(5, 5, 5, 11, 13, 11, all('flame'))], collision: [box(1, 0, 1, 15, 5, 15)], mat: MAT.wood, hardness: 0.6, emit: 15, walkCost: 0 }),
 
   // --- furniture and workstations ---
   table: register('table', 0, {

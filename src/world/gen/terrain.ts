@@ -157,6 +157,8 @@ export function buildTerrain(config: IslandConfig): Terrain {
   const lakeLevel = Math.round(clamp(at(lx, lz) - 1, seaLevel + 9, seaLevel + 26));
   const water = new Int16Array(n).fill(-1);
   const flow = new Int8Array(n).fill(-1);
+  /** 1 on the lake's own water, 2 on the rim that holds it in. */
+  const lakeZone = new Uint8Array(n);
   for (let z = Math.max(0, Math.floor(lz - lakeRadius * 1.6)); z <= Math.min(sz - 1, Math.ceil(lz + lakeRadius * 1.6)); z++) {
     for (let x = Math.max(0, Math.floor(lx - lakeRadius * 1.6)); x <= Math.min(sx - 1, Math.ceil(lx + lakeRadius * 1.6)); x++) {
       const ang = Math.atan2(z - lz, x - lx);
@@ -167,10 +169,12 @@ export function buildTerrain(config: IslandConfig): Terrain {
         const depth = 1.5 + 6 * (1 - (r / rr) ** 2);
         h[i] = Math.min(h[i] as number, lakeLevel - depth);
         water[i] = lakeLevel;
+        lakeZone[i] = 1;
       } else if (r <= rr + 6) {
         // A rim so the lake holds its level, falling away gently where the land outside is lower.
         const rim = lakeLevel + 1 - Math.max(0, r - rr - 2) * 0.6;
         h[i] = Math.max(h[i] as number, rim);
+        lakeZone[i] = 2;
       }
     }
   }
@@ -188,23 +192,47 @@ export function buildTerrain(config: IslandConfig): Terrain {
     const pz = ux;
     const side = 58 * scale;
     const total = len * 1.9;
-    let level = lakeLevel;
-    let prevX = lx;
-    let prevZ = lz;
-    for (let s = lakeRadius * 0.5; s < total; s += 0.75) {
+
+    // The course first, so the surface can be set along the whole of it before anything is cut.
+    const course: { x: number; z: number; t: number }[] = [];
+    let reachesSea = false;
+    for (let s = lakeRadius * 0.5; s < total && !reachesSea; s += 0.75) {
       const t = s / len;
       const lateral = side * smoothstep(0.25, 0.85, t) + 26 * scale * nShape.n2(s / (70 * scale) + 3.3, 7.7) * smoothstep(0.05, 0.3, t);
       const x = lx + ux * s + px * lateral;
       const z = lz + uz * s + pz * lateral;
       if (x < 2 || z < 2 || x > sx - 3 || z > sz - 3) break;
-      const ground = at(x, z);
-      const profile = lakeLevel - (lakeLevel - (seaLevel - 1)) * smoothstep(0.02, 1.02, t);
-      level = Math.min(level, Math.max(seaLevel - 1, Math.min(Math.floor(ground) - 1, Math.ceil(profile))));
+      course.push({ x, z, t });
+      reachesSea = landAt(x, z) < -0.03;
+    }
+    // The river leaves the lake at the lake's own level and keeps it until it is clear of the rim: the lake is
+    // never cut into, and its water never stands above the river beside it.
+    let outlet = -1;
+    course.forEach((p, k) => {
+      if (lakeZone[clamp(Math.round(p.z), 0, sz - 1) * sx + clamp(Math.round(p.x), 0, sx - 1)] !== 0) outlet = k;
+    });
+    const tOut = outlet >= 0 ? (course[outlet] as { t: number }).t : 0.02;
+    // The ground as it lay before the river. The surface is set from this, never from a bed the river has
+    // already cut: reading its own channel, each point sank below the one before, and the river fell to
+    // sea level within a few blocks of its start, in a trench through the lake.
+    const natural = h.slice();
+
+    let level = lakeLevel;
+    let prevX = lx;
+    let prevZ = lz;
+    course.forEach(({ x, z, t }, k) => {
+      if (k > outlet) {
+        // Down to the sea by the time it passes the village, a block or more into the ground, never uphill.
+        const ground = natural[clamp(Math.round(z), 0, sz - 1) * sx + clamp(Math.round(x), 0, sx - 1)] as number;
+        const profile = lakeLevel - (lakeLevel - (seaLevel - 1)) * smoothstep(tOut, 1.02, t);
+        level = Math.min(level, Math.max(seaLevel - 1, Math.min(Math.floor(ground) - 1, Math.ceil(profile))));
+      }
       const ang = Math.atan2(-(z - prevZ), x - prevX);
       river.push({ x, z, level });
       prevX = x;
       prevZ = z;
-      if (landAt(x, z) < -0.03) break;
+      // The last point of a river that reaches the sea lies in open water: nothing to cut.
+      if (reachesSea && k === course.length - 1) return;
       const dir = ((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8;
       const halfWidth = lerp(1.8, 3.4, smoothstep(0, 1, t)) * Math.max(0.7, scale);
       const reach = halfWidth + 4;
@@ -214,8 +242,8 @@ export function buildTerrain(config: IslandConfig): Terrain {
           const dist = Math.hypot(cx2 - x, cz2 - z);
           if (dist > reach) continue;
           const i = cz2 * sx + cx2;
+          if (lakeZone[i] === 1) continue;
           if (dist <= halfWidth) {
-            if ((water[i] as number) === lakeLevel && level === lakeLevel) continue;
             const existing = water[i] as number;
             const w = existing >= 0 ? Math.min(existing, level) : level;
             water[i] = w;
@@ -228,7 +256,7 @@ export function buildTerrain(config: IslandConfig): Terrain {
           }
         }
       }
-    }
+    });
   }
 
   // --- integer heights, sea, biomes ---
@@ -238,6 +266,16 @@ export function buildTerrain(config: IslandConfig): Terrain {
   for (let i = 0; i < n; i++) {
     if ((water[i] as number) < 0 && (height[i] as number) < seaLevel - 1) water[i] = seaLevel - 1;
     if ((water[i] as number) >= 0 && (height[i] as number) >= (water[i] as number)) height[i] = (water[i] as number) - 1;
+  }
+  // No bank stands lower than the water beside it. Where the river falls several blocks at once, the valley
+  // cut for the lower reach takes the bank of the upper one with it.
+  for (let z = 1; z < sz - 1; z++) {
+    for (let x = 1; x < sx - 1; x++) {
+      const i = z * sx + x;
+      if ((water[i] as number) >= 0) continue;
+      const beside = Math.max(water[i - 1] as number, water[i + 1] as number, water[i - sx] as number, water[i + sx] as number);
+      if ((height[i] as number) < beside) height[i] = beside;
+    }
   }
   for (let z = 0; z < sz; z++) {
     for (let x = 0; x < sx; x++) {

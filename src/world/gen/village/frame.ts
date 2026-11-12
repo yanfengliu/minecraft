@@ -3,8 +3,8 @@
 // frame turns them to face any of the four directions, including every block
 // that has an orientation of its own (stairs, doors, beds, ovens, logs).
 
-import type { Cell } from '../../../sim/api';
 import { B, FACING_STEP, bedState, doorState } from '../../blocks';
+import type { Cell } from '../../plan';
 import type { World } from '../../world';
 
 /** Local directions: into the building, to its right seen from outside, out of its front, to its left. */

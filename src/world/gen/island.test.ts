@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { B, IS_LOG, SOLID, WATER_SOURCE } from '../blocks';
+import { B, IS_LOG, WATER_SOURCE } from '../blocks';
 import { LightEngine } from '../light';
 import { isStandable } from '../walk';
 import { generateIsland } from './island';
 import { DEFAULT_ISLAND } from './terrain';
+import { lakeHoles, waterFaults } from './testkit';
 
 const SMALL = { seed: 7, sx: 192, sy: 128, sz: 192, seaLevel: 40 };
 
@@ -56,18 +57,21 @@ describe('island generation', () => {
     expect(logs).toBeGreaterThan(200);
   });
 
-  it('never leaves water resting on nothing or hanging beside open air below the surface', () => {
-    let leaks = 0;
-    for (let z = 1; z < SMALL.sz - 1; z++) {
-      for (let x = 1; x < SMALL.sx - 1; x++) {
-        for (let y = 1; y < 120; y++) {
-          if (!WATER_SOURCE[world.get(x, y, z)]) continue;
-          const below = world.get(x, y - 1, z);
-          if (!SOLID[below] && !WATER_SOURCE[below]) leaks++;
-        }
-      }
-    }
-    expect(leaks).toBe(0);
+  it('never leaves water resting on nothing or standing beside open air', () => {
+    // Beside as well as beneath: looking only at the cell below each one, this test passed a river
+    // that had cut a trench through the lake, between walls of standing water.
+    expect(waterFaults(world)).toEqual({ hanging: 0, stillOpen: 0, overBank: 0, first: [] });
+  });
+
+  it('keeps the lake whole: the river leaves at its level and comes down to the sea along its course', () => {
+    const { lake, river } = info;
+    expect(lakeHoles(world, lake)).toBe(0);
+    const crossing = river.filter((p) => Math.hypot(p.x - lake.x, p.z - lake.z) <= lake.radius * 0.75);
+    expect(crossing.length).toBeGreaterThan(0);
+    for (const p of crossing) expect(p.level).toBe(lake.level);
+    // A third of the way down it is still a river in the hills. It used to reach the level of the sea
+    // within eight blocks of its start and run the rest of the way in a gorge.
+    expect(river[Math.floor(river.length / 3)]!.level).toBeGreaterThan(SMALL.seaLevel + 4);
   });
 
   it('ships with light already computed, matching a fresh computation', () => {
@@ -87,6 +91,14 @@ describe('island generation', () => {
   it('is deterministic for a seed and different for another', () => {
     expect(digest(generateIsland(SMALL).world)).toBe(digest(world));
     expect(digest(generateIsland({ ...SMALL, seed: 8 }).world)).not.toBe(digest(world));
+  });
+
+  // Other seeds and sizes; the second is the island the browser gate loads.
+  it.each([[3, 192], [DEFAULT_ISLAND.seed, 256], [11, 224]])('holds its water on seed %i at %i blocks across', (seed, size) => {
+    const other = generateIsland({ ...SMALL, seed, sx: size, sz: size });
+    expect(waterFaults(other.world)).toEqual({ hanging: 0, stillOpen: 0, overBank: 0, first: [] });
+    expect(lakeHoles(other.world, other.info.lake)).toBe(0);
+    expect(other.info.river[Math.floor(other.info.river.length / 3)]!.level).toBeGreaterThan(SMALL.seaLevel + 4);
   });
 
   // Opt-in (FULL_ISLAND=1): the full island takes seconds, which is the loading screen's budget, not a unit test's.
