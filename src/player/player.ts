@@ -130,7 +130,9 @@ export class Player {
 
     if (this.flying) {
       const speed = this.sprinting ? 42 : 12;
-      const up = (input.down('Space') ? 1 : 0) - (input.down('KeyC') || input.down('ControlLeft') ? 1 : 0);
+      // Down is C and only C. It was Control as well, and Control with W, flying down and forward, is the
+      // browser's own shortcut for closing the tab, which a page cannot stop.
+      const up = (input.down('Space') ? 1 : 0) - (input.down('KeyC') ? 1 : 0);
       this.vx = approach(this.vx, wx * speed, 120 * dt);
       this.vz = approach(this.vz, wz * speed, 120 * dt);
       this.vy = approach(this.vy, up * speed, 120 * dt);

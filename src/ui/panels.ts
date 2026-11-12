@@ -2,7 +2,7 @@
 // the trade window. Each is plain data from a simulation turned into a table;
 // nothing here changes the world except through `Trade`.
 
-import type { Game } from '../game';
+import type { GameHost } from './host';
 import { ITEMS, item } from '../world/items';
 import type { Panel } from './hud';
 import type { Icons } from './icons';
@@ -26,7 +26,7 @@ const icon = (icons: Icons, itemId: number): string => `<span class="icon" style
 const money = (v: number): string => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
 
 /** L: what the village has, what it costs, and where the coin is. */
-export function ledgerPanel(game: Game, icons: Icons): Panel {
+export function ledgerPanel(game: GameHost, icons: Icons): Panel {
   return {
     title: 'Village ledger',
     render: () => {
@@ -69,7 +69,7 @@ export function ledgerPanel(game: Game, icons: Icons): Panel {
 const plural = (kind: string): string => (kind === 'deer' || kind === 'fish' || kind === 'sheep' ? kind : kind === 'wolf' ? 'wolves' : kind === 'fox' ? 'foxes' : `${kind}s`);
 
 /** K: how many of each wild creature there are, how they have fared, and how the plants are doing. */
-export function wildlifePanel(game: Game): Panel {
+export function wildlifePanel(game: GameHost): Panel {
   return {
     title: 'Wildlife',
     render: () => {
@@ -99,7 +99,7 @@ export function wildlifePanel(game: Game): Panel {
 }
 
 /** The trade window, opened by right-clicking a villager at a counter or stall. */
-export function tradePanel(game: Game, icons: Icons): Panel {
+export function tradePanel(game: GameHost, icons: Icons): Panel {
   const buttons = (act: string, good: string, enabled: (n: number) => boolean): string =>
     [1, 5, 20].map((n) => `<button data-act="${act}:${good}*${n}"${enabled(n) ? '' : ' disabled'}>${n}</button>`).join('');
   return {

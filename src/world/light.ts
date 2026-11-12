@@ -69,9 +69,19 @@ export class LightEngine {
     this.sxz = world.sx * world.sz;
   }
 
-  /** Subscribe to the world so every block change repairs light. Returns the unsubscribe function. */
+  /**
+   * Subscribe to the world so every block change that can alter light repairs
+   * it. Returns the unsubscribe function. Light depends on a block only through
+   * how much it stops and how much it gives off, and most edits change neither:
+   * a crop a stage taller, a door swung, soil wetted, water a level deeper. The
+   * simulations make such edits all day, and each one used to darken and
+   * re-flood the light round it for nothing.
+   */
   attach(): () => void {
-    return this.world.changed.on((c) => this.update(c.x, c.y, c.z));
+    return this.world.changed.on((c) => {
+      if (LIGHT_OPACITY[c.old] === LIGHT_OPACITY[c.state] && EMIT[c.old] === EMIT[c.state]) return;
+      this.update(c.x, c.y, c.z);
+    });
   }
 
   private pack(x: number, y: number, z: number): number {

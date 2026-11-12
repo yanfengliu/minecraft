@@ -14,7 +14,7 @@ Playable. You walk, jump, swim and fly (F) around a generated island with a moun
 
 Not there: sound, saving, any combat or survival pressure, and touch controls. Known rough edges are listed at the end of [the work plan](docs/work/0_genesis/plan.md); [the devlog](docs/devlog/summary.md) has the history.
 
-Add `?size=256` to the address for a quarter-size island that loads in a second (it is too small to hold the village), and `?seed=7` for a different one. `H` in the game lists the keys.
+Add `?size=256` to the address for an island a third as wide that loads in a second (it is too small to hold the village), and `?seed=7` for a different one. `H` in the game lists the keys.
 
 ## Running it
 

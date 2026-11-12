@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { B, IS_LEAVES, IS_LOG } from '../../world/blocks';
 import { speciesOfSapling } from '../../world/gen/trees';
 import type { World } from '../../world/world';
+import type { EntityView } from '../api';
 import { FIXTURE } from './fixture';
 import { FOOD_FLOWER, FOOD_GRASS } from './species';
 import { FOOD, countFloor, floorCellY } from './terrain';
@@ -317,5 +318,42 @@ describe('the seasons and the weather', () => {
     expect(springWet).toBeGreaterThan(summerWet * 1.3);
     expect(autumnWet).toBeLessThan(summerWet * 0.7);
     expect(autumnWet).toBeGreaterThan(0);
+  });
+});
+
+describe('where a sapling may not become a tree', () => {
+  it('waits while someone stands by it, and never grows against something built', () => {
+    const someone: EntityView = { id: 7, kind: 'villager', look: 0, role: 0, x: 0, y: 0, z: 0, yaw: 0, anim: 'idle', animTime: 0, scale: 1, held: -1, bubble: '' };
+    const rig = makeRig({ ...plantsOnly, startDay: 0, people: [someone] });
+    const world = rig.world;
+    const m = FIXTURE.meadow;
+    const plant = (x: number, z: number): { x: number; y: number; z: number } => {
+      const y = world.height(x, z);
+      world.set(x, y, z, B.oak_sapling);
+      return { x, y, z };
+    };
+    const free = plant(m.x, m.z);
+    const watched = plant(m.x + 14, m.z);
+    const walled = plant(m.x, m.z + 14);
+    // Somebody stands two blocks from one sapling, and a plank wall three high two blocks from another.
+    Object.assign(someone, { x: watched.x + 2.5, y: watched.y, z: watched.z + 0.5 });
+    const wall: [number, number, number][] = [];
+    for (let dz = -2; dz <= 2; dz++) for (let up = 0; up < 3; up++) wall.push([walled.x + 2, walled.y + up, walled.z + dz]);
+    for (const [x, y, z] of wall) world.set(x, y, z, B.oak_planks);
+    const what = (c: { x: number; y: number; z: number }): number => world.get(c.x, c.y, c.z);
+
+    rig.days(9.5);
+    expect(what(free)).toBe(B.oak_log);
+    expect(what(watched)).toBe(B.oak_sapling);
+    expect(what(walled)).toBe(B.oak_sapling);
+
+    // The watcher walks off, and that one grows; the one by the wall stands its fortnight and dies.
+    Object.assign(someone, { x: 4.5, z: 4.5 });
+    rig.days(1);
+    expect(what(watched)).toBe(B.oak_log);
+    rig.days(6);
+    expect(what(walled)).toBe(B.air);
+    for (const [x, y, z] of wall) expect(world.get(x, y, z)).toBe(B.oak_planks);
+    for (let dz = -2; dz <= 2; dz++) for (let up = 0; up < 3; up++) expect(IS_LEAVES[world.get(walled.x + 3, walled.y + up, walled.z + dz)]).toBe(0);
   });
 });

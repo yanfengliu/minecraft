@@ -108,9 +108,13 @@ export class Interaction {
     }
 
     // --- hotbar selection ---
-    for (let i = 0; i < 9; i++) if (input.hit(`Digit${i + 1}`)) inv.selected = i;
+    // Not while a panel is open: the keys and the wheel are the panel's then. The wheel is taken either way,
+    // so that what was turned over a panel does not move the belt when it closes.
     const wheel = input.consumeWheel();
-    if (wheel !== 0) inv.selected = (inv.selected + wheel + 9) % 9;
+    if (!input.enabled) return;
+    for (let i = 0; i < 9; i++) if (input.hit(`Digit${i + 1}`)) inv.selected = i;
+    // A fast wheel sends many notches in one frame; ten of them back from slot 0 once left a negative slot.
+    if (wheel !== 0) inv.selected = (((inv.selected + wheel) % 9) + 9) % 9;
   }
 
   private breakBlock(world: World, inv: Inventory, t: RayHit, hooks: InteractionHooks): void {

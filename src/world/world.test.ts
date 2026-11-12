@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../core/rng';
 import {
-  B, BLOCKS, FACE_NY, FACE_NZ, FACE_PY, FULL_FACES, SOLID, STATE_COUNT, WATER_LEVEL, bedState, doorIsOpen, doorState,
-  isDoor, rotateBoxes, waterState,
+  B, BLOCKS, EMIT, FACE_NY, FACE_NZ, FACE_PY, FULL_FACES, LIGHT_OPACITY, SOLID, STATE_COUNT, WATER_LEVEL, bedState, doorIsOpen,
+  doorState, isDoor, rotateBoxes, waterState,
 } from './blocks';
 import { ECONOMY_GOODS, ITEMS, dropOf, item } from './items';
 import { LightEngine } from './light';
@@ -197,6 +197,38 @@ describe('light', () => {
     for (let y = 0; y < w.sy; y++) for (let z = 0; z < w.sz; z++) for (let x = 0; x < w.sx; x++) if (w.getLight(x, y, z) !== fresh.getLight(x, y, z)) n++;
     return n;
   };
+
+  it('does no repair for an edit that changes neither what a block stops nor what it gives off', () => {
+    const w = createFlatWorld(32, 32, 20);
+    w.set(8, 20, 8, B.farmland);
+    w.set(8, 21, 8, B.wheat);
+    w.set(12, 21, 8, waterState(3));
+    w.set(16, 21, 8, B.lantern);
+    const light = new LightEngine(w);
+    light.computeAll();
+    light.attach();
+    const repaired: string[] = [];
+    const update = light.update.bind(light);
+    light.update = (x, y, z) => {
+      repaired.push(`${x},${y},${z}`);
+      update(x, y, z);
+    };
+    // What the simulations do all day: a crop grows a stage, soil is wetted, water rises a level.
+    const same: [number, number, number, number][] = [[8, 21, 8, B.wheat + 1], [8, 20, 8, B.farmland + 1], [12, 21, 8, waterState(5)]];
+    for (const [x, y, z, state] of same) {
+      const old = w.get(x, y, z);
+      expect(LIGHT_OPACITY[old], BLOCKS[state]!.name).toBe(LIGHT_OPACITY[state]);
+      expect(EMIT[old], BLOCKS[state]!.name).toBe(EMIT[state]);
+      w.set(x, y, z, state);
+    }
+    expect(repaired).toEqual([]);
+    // And what does change the light is still repaired: a lantern lit, a block set down.
+    w.set(16, 21, 8, B.lantern + 1);
+    w.set(20, 21, 8, B.stone);
+    expect(repaired).toEqual(['16,21,8', '20,21,8']);
+    expect(w.blockLight(17, 21, 8)).toBeGreaterThan(8);
+    expect(disagreements(w)).toBe(0);
+  });
 
   it('keeps a weaker lamp alight when a stronger one beside it is taken away', () => {
     const w = createFlatWorld(32, 32, 15, 32);

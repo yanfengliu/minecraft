@@ -3,7 +3,7 @@
 // (inventory, almanac, help, and those the simulations add). Plain DOM over the
 // canvas; the game calls `update` once a frame.
 
-import type { Game } from '../game';
+import type { GameHost } from './host';
 import { HOTBAR, SLOTS } from '../player/inventory';
 import type { InspectInfo } from '../sim/api';
 import { REGIMES } from '../sim/weather';
@@ -30,8 +30,7 @@ export class Hud {
   open: string | null = null;
   showDebug = false;
 
-  private readonly game: Game;
-  private readonly root: HTMLElement;
+  private readonly game: GameHost;
   private readonly el: Record<string, HTMLElement> = {};
   private readonly slots: HTMLElement[] = [];
   private inventoryVersion = -1;
@@ -40,9 +39,13 @@ export class Hud {
   private refresh = 0;
   private picked = -1;
   private readonly bubbles: HTMLElement[] = [];
+  /** The markup last written to each element, so that it is only written when it changes. */
+  private readonly written = new WeakMap<HTMLElement, string>();
+  /** Size of the interface's root, kept from the last window resize. */
+  private width = 0;
+  private height = 0;
 
-  constructor(root: HTMLElement, game: Game) {
-    this.root = root;
+  constructor(root: HTMLElement, game: GameHost) {
     this.game = game;
     this.icons = new Icons(game.renderer.tileSet);
     const make = (cls: string, parent: HTMLElement = root): HTMLElement => {
@@ -56,7 +59,17 @@ export class Hud {
     (this.el.hint as HTMLElement).textContent = 'E pack · L ledger · K wildlife · T almanac · H help · F fly · [ ] time';
     (this.el.inspector as HTMLElement).style.display = 'none';
     (this.el.panel as HTMLElement).style.display = 'none';
-    (this.el.panel as HTMLElement).addEventListener('click', (e) => this.click(e));
+    // On the press, not the click: the open panel is repainted as its figures change, and a click whose
+    // press and release fell either side of a repaint found no button under it.
+    (this.el.panel as HTMLElement).addEventListener('pointerdown', (e) => {
+      if (e.button === 0) this.click(e);
+    });
+    const measure = (): void => {
+      this.width = root.clientWidth;
+      this.height = root.clientHeight;
+    };
+    measure();
+    window.addEventListener('resize', measure);
 
     this.addPanel('KeyE', 'pack', this.packPanel());
     this.addPanel('KeyT', 'almanac', this.almanacPanel());
@@ -89,7 +102,18 @@ export class Hud {
   private paint(): void {
     const p = this.open ? this.panels.get(this.open) : null;
     if (!p) return;
-    (this.el.panel as HTMLElement).innerHTML = `<button class="close" data-act="close:">Close</button><h2>${esc(p.title)}</h2>${p.render()}`;
+    this.write(this.el.panel as HTMLElement, `<button class="close" data-act="close:">Close</button><h2>${esc(p.title)}</h2>${p.render()}`);
+  }
+
+  /**
+   * Set an element's markup, if it is not that already. Most of what the
+   * interface shows is the same from one frame to the next, and writing it
+   * anyway made the browser rebuild and lay out the element every frame.
+   */
+  private write(el: HTMLElement, html: string): void {
+    if (this.written.get(el) === html) return;
+    this.written.set(el, html);
+    el.innerHTML = html;
   }
 
   private click(e: MouseEvent): void {
@@ -106,19 +130,20 @@ export class Hud {
     const g = this.game;
     const input = g.input;
     // Keys: panels, debug readout, time.
-    for (const [key, name] of this.keys) if (input.hit(key)) this.show(this.open === name ? null : name);
-    if (input.hit('Escape') && this.open) this.show(null);
-    if (input.hit('F3')) this.showDebug = !this.showDebug;
-    if (input.hit('BracketRight')) g.timeScale = SCALES[Math.min(SCALES.length - 1, SCALES.indexOf(g.timeScale) + 1)] ?? 1;
-    if (input.hit('BracketLeft')) g.timeScale = SCALES[Math.max(0, SCALES.indexOf(g.timeScale) - 1)] ?? 1;
-    if (input.hit('KeyP')) g.paused = !g.paused;
+    // The interface's own keys work whatever panel is open; the game's (fly, the hotbar) do not.
+    for (const [key, name] of this.keys) if (input.hit(key, true)) this.show(this.open === name ? null : name);
+    if (input.hit('Escape', true) && this.open) this.show(null);
+    if (input.hit('F3', true)) this.showDebug = !this.showDebug;
+    if (input.hit('BracketRight', true)) g.timeScale = SCALES[Math.min(SCALES.length - 1, SCALES.indexOf(g.timeScale) + 1)] ?? 1;
+    if (input.hit('BracketLeft', true)) g.timeScale = SCALES[Math.max(0, SCALES.indexOf(g.timeScale) - 1)] ?? 1;
+    if (input.hit('KeyP', true)) g.paused = !g.paused;
 
     // Status lines.
     const w = g.weather;
     const sky = w.snowing ? 'Snow' : w.regime.charAt(0).toUpperCase() + w.regime.slice(1);
     const speed = g.paused ? ' · paused' : g.timeScale !== 1 ? ` · ${g.timeScale}x` : '';
-    (this.el.status as HTMLElement).innerHTML = `<b>${esc(g.clock.format())}</b>${speed}<small>${sky} · ${w.temperature.toFixed(0)}°C · wind ${w.windSpeed.toFixed(0)} m/s</small>`;
-    (this.el.purse as HTMLElement).textContent = `${g.inventory.coins} coins`;
+    this.write(this.el.status as HTMLElement, `<b>${esc(g.clock.format())}</b>${speed}<small>${sky} · ${w.temperature.toFixed(0)}°C · wind ${w.windSpeed.toFixed(0)} m/s</small>`);
+    this.write(this.el.purse as HTMLElement, `${g.inventory.coins} coins`);
 
     // Hotbar.
     const inv = g.inventory;
@@ -179,11 +204,14 @@ export class Hud {
       return;
     }
     card.style.display = '';
-    card.innerHTML =
+    this.write(
+      card,
       `<h3>${esc(info.title)}</h3><em>${esc(info.subtitle)}</em>` +
-      info.lines.map((l) => `<p>${esc(l)}</p>`).join('') +
-      info.bars.map((b) => `<div class="bar">${esc(b.label)}<span><b style="width:${Math.round(Math.min(1, Math.max(0, b.value)) * 100)}%"></b></span></div>`).join('');
-    prompt.textContent = g.focusPrompt();
+        info.lines.map((l) => `<p>${esc(l)}</p>`).join('') +
+        info.bars.map((b) => `<div class="bar">${esc(b.label)}<span><b style="width:${Math.round(Math.min(1, Math.max(0, b.value)) * 100)}%"></b></span></div>`).join(''),
+    );
+    const ask = g.focusPrompt();
+    if (prompt.textContent !== ask) prompt.textContent = ask;
   }
 
   private paintBubbles(): void {
@@ -195,8 +223,10 @@ export class Hud {
       layer.appendChild(d);
       this.bubbles.push(d);
     }
-    const w = this.root.clientWidth;
-    const h = this.root.clientHeight;
+    // Measured when the window changes size, not here: reading the size after this frame's writes made the
+    // browser lay the page out again on every frame.
+    const w = this.width;
+    const h = this.height;
     this.bubbles.forEach((d, i) => {
       const s = said[i];
       const at = s ? g.project(s.x, s.y, s.z) : null;
@@ -273,7 +303,7 @@ export class Hud {
       title: 'Tidewick',
       render: () =>
         '<p class="sub">An island, a village that keeps its own hours, and the woods and waters around it. Click the view to take the mouse.</p><table>' +
-        k('W A S D', 'walk; hold <kbd>Shift</kbd> to run') + k('Space', 'jump; swim upward') + k('F', 'fly, or land') +
+        k('W A S D', 'walk; hold <kbd>Shift</kbd> to run') + k('Space', 'jump; swim upward; rise when flying') + k('C', 'dive; sink when flying') + k('F', 'fly, or land') +
         k('Left mouse', 'break the block you are aiming at (hold)') + k('Right mouse', 'place the held block; open doors and gates; talk and trade') +
         k('1 to 9, wheel', 'choose from your belt') + k('E', 'your pack') + k('L', 'the village ledger: prices, stores, people') +
         k('K', 'wildlife: numbers of each kind over time') + k('T', 'almanac: pace of time, time of day, weather') +

@@ -132,6 +132,32 @@ describe('breaking, using and placing blocks', () => {
   });
 });
 
+describe('choosing from the belt', () => {
+  const turn = (selected: number, wheel: number, enabled = true, key = ''): number => {
+    const { world, inv, hooks } = scene();
+    inv.selected = selected;
+    const input: Controls = { buttons: new Set(), enabled, click: () => false, hit: (code) => code === key, consumeWheel: () => wheel };
+    new Interaction().update(1 / 60, input, aimAt(10.5, 9.5, 10.5, GROUND + 0.5, 12), world, inv, hooks);
+    return inv.selected;
+  };
+
+  it('wraps round the nine slots however far the wheel is spun in one frame', () => {
+    expect(turn(0, 1)).toBe(1);
+    expect(turn(8, 1)).toBe(0);
+    expect(turn(0, -1)).toBe(8);
+    // A free-spinning wheel: ten notches and more in a frame once left a negative slot, and nothing could be placed.
+    expect(turn(0, -10)).toBe(8);
+    expect(turn(3, -31)).toBe(8);
+    expect(turn(3, 40)).toBe(7);
+  });
+
+  it('leaves the belt alone while a panel is open', () => {
+    expect(turn(4, 3, false)).toBe(4);
+    expect(turn(4, 0, false, 'Digit2')).toBe(4);
+    expect(turn(4, 0, true, 'Digit2')).toBe(1);
+  });
+});
+
 describe('the pack', () => {
   it('knows how much more of a thing it can take', () => {
     const inv = new Inventory();

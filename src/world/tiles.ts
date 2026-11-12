@@ -1,7 +1,7 @@
 // The tile set: every 16x16 surface texture a block face can show, by name.
 // The order here IS the layer order of the GPU texture array, so the world
 // layer (headless, worker-safe) and the renderer agree without sharing code.
-// `src/render/textures.ts` must paint every name; a unit test holds it to that.
+// The painters in `src/render/tiles/` must paint every name; a unit test holds them to that.
 
 export const TILE_NAMES = [
   // terrain

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { IS_LEAVES } from '../../world/blocks';
+import { B, IS_LEAVES, isWater } from '../../world/blocks';
 import { ANIM_STATES, type EntityView } from '../api';
 import { SIM_DT } from '../clock';
 import { daylight } from '../sky';
@@ -8,6 +8,7 @@ import { H_WOOD, Habitat } from './habitat';
 import { WILD_KINDS } from './species';
 import { airFloor } from './terrain';
 import { type Rig, makeRig, makeView, misplaced } from './testkit';
+import { type Animal, MODE_PADDLE } from './types';
 
 const WILD_ANIMS = new Set(['idle', 'walk', 'run', 'eat', 'sleep', 'swim', 'fly', 'glide', 'dead']);
 const only = (populations: Record<string, number>): { eco: { populations: Record<string, number>; immigration: boolean } } => ({
@@ -290,6 +291,43 @@ describe('where they live and how they keep together', () => {
     const turns = [...turned.values()].map((t) => t.sum / (2 * Math.PI));
     expect(turns.length).toBe(12);
     expect(Math.min(...turns)).toBeGreaterThan(3);
+  });
+});
+
+describe('ducks on the water', () => {
+  it('a duck paddling under a bough stays on the water', () => {
+    const rig = makeRig({ ...only({ duck: 8 }), startDay: 8, startHour: 9, weather: 'clear' });
+    const world = rig.world;
+    const pond = FIXTURE.pond;
+    // Boughs over the pond: leaves three blocks above every third column of its water.
+    let boughs = 0;
+    for (let dz = -pond.radius; dz <= pond.radius; dz++) {
+      for (let dx = -pond.radius; dx <= pond.radius; dx++) {
+        const x = pond.x + dx;
+        const z = pond.z + dz;
+        // The floor of open air over a column of water is the cell above its top water cell.
+        const top = airFloor(world, x, z) - 1;
+        if ((x + z) % 3 !== 0 || !isWater(world.get(x, top, z))) continue;
+        world.set(x, top + 3, z, B.oak_leaves);
+        boughs++;
+      }
+    }
+    expect(boughs).toBeGreaterThan(20);
+    // A bird flies up when the floor of open air over it is not the one it settled under, which is how it
+    // knows its branch was cut. A paddler has to carry that with it from column to column.
+    let paddling = 0;
+    const lost: string[] = [];
+    for (let t = 0; t < 6000; t++) {
+      rig.ticks(1);
+      for (const v of rig.living('duck')) {
+        const a = v as unknown as Animal;
+        if (a.mode !== MODE_PADDLE) continue;
+        paddling++;
+        if (a.perchFloor !== airFloor(world, a.cx, a.cz) && lost.length < 3) lost.push(`duck ${a.id} at ${a.cx},${a.cz}: settled under ${a.perchFloor}, now under ${airFloor(world, a.cx, a.cz)}`);
+      }
+    }
+    expect(paddling).toBeGreaterThan(300);
+    expect(lost).toEqual([]);
   });
 });
 

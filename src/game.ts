@@ -21,6 +21,7 @@ import { type Camera, type FrameInfo, Renderer } from './render/renderer';
 import { type AnimState, type EntityView, type InspectInfo, type VillagePlan, createBasicActions } from './sim/api';
 import { Clock, DAY_SECONDS, HOUR_SECONDS, SIM_DT } from './sim/clock';
 import { type Regime, Weather } from './sim/weather';
+import type { Speech } from './ui/host';
 import { Hud } from './ui/hud';
 import { watchAttachments } from './world/attach';
 import { BLOCKS, IS_LOG } from './world/blocks';
@@ -33,15 +34,6 @@ import { World } from './world/world';
 import type { GenResult } from './workers/gen.worker';
 
 export type Progress = (stage: string, fraction: number) => void;
-
-/** Something said or shown above a creature's head. */
-export interface Speech {
-  x: number;
-  y: number;
-  z: number;
-  text: string;
-  kind: 'bubble' | 'tag';
-}
 
 /** How far away a creature can be looked at and spoken to, in metres, when no block is nearer. */
 const CREATURE_REACH = 6.5;
@@ -130,8 +122,10 @@ export class Game {
       if (d) this.drop(d.id, 1, x, y, z);
     });
     this.renderer = new Renderer(canvas, this.world);
-    this.world.changed.on(() => {
-      this.renderer.heightsDirty = true;
+    this.world.changed.on((c) => {
+      // Only an edit at the top of its column changes how far down the rain comes. The simulations edit the
+      // world all day (doors, crops, wet soil), and each edit had the whole map sent to the GPU again.
+      if (c.y + 1 >= this.world.height(c.x, c.z)) this.renderer.heightsDirty = true;
     });
     const workers = clamp((navigator.hardwareConcurrency || 4) - 2, 2, 8);
     this.pool = new MeshPool(this.world, (section, mesh) => this.renderer.setMesh(section, mesh), workers);

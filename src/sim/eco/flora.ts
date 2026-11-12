@@ -337,14 +337,14 @@ export class Flora {
    * and nothing built, sown or paved within three: the village keeps its
    * fields, paths and walls clear of the woods.
    */
-  private clearForTree(x: number, y: number, z: number): boolean {
+  private clearForTree(x: number, y: number, z: number, spaced = true): boolean {
     const w = this.world;
     for (let dz = -3; dz <= 3; dz++) {
       for (let dx = -3; dx <= 3; dx++) {
         const cx = x + dx;
         const cz = z + dz;
         const s = w.get(cx, y, cz);
-        if (Math.abs(dx) <= 2 && Math.abs(dz) <= 2 && (dx !== 0 || dz !== 0)) {
+        if (spaced && Math.abs(dx) <= 2 && Math.abs(dz) <= 2 && (dx !== 0 || dz !== 0)) {
           if (IS_LOG[s] || IS_LOG[w.get(cx, y + 1, cz)] || speciesOfSapling(s)) return false;
         }
         if (SHAPE[s] === SHAPE_CROP) return false;
@@ -392,21 +392,31 @@ export class Flora {
       if (age < SAPLING_DAYS + (hash32(key) % 3) || e.season === WINTER) continue;
       if (w.exposed(x, y, z) && w.skyLight(x, y, z) >= SAPLING_LIGHT && this.roomToGrow(x, y, z)) {
         // Not while an animal is standing, or a bird perched, where the trunk and crown will be: a big oak's
-        // limbs carry leaves five blocks out from the trunk.
-        if (e.hash.nearest(x + 0.5, z + 0.5, 7, this.inTheWay, null, -1)) continue;
+        // limbs carry leaves five blocks out from the trunk. Nor while a villager or the player is: a tree
+        // once grew round whoever stood by the sapling.
+        if (e.hash.nearest(x + 0.5, z + 0.5, 7, this.inTheWay, null, -1) || e.personNear(x + 0.5, y, z + 0.5, 7)) continue;
+        // Nor ever beside something built. Seeds do not fall there, but a sapling planted by hand against a
+        // house did become a tree, and its crown filled the rooms with leaves. Such a sapling stands its
+        // fortnight and dies, as one in deep shade does. (Other trunks near it are `roomToGrow`'s business.)
+        if (!this.clearForTree(x, y, z, false)) {
+          if (age > SAPLING_GIVE_UP) this.wither(key, x, y, z);
+          continue;
+        }
         if (growTree(w, x, y, z, species, this.rng)) {
           this.saplings.delete(key);
           this.treesGrown++;
           return true;
         }
       }
-      if (age > SAPLING_GIVE_UP) {
-        // Shaded out or crowded: it never made a tree.
-        w.set(x, y, z, B.air);
-        this.saplings.delete(key);
-        this.saplingsLost++;
-      }
+      if (age > SAPLING_GIVE_UP) this.wither(key, x, y, z);
     }
     return false;
+  }
+
+  /** Shaded out, crowded or hemmed in by what is built: the sapling never made a tree. */
+  private wither(key: number, x: number, y: number, z: number): void {
+    this.world.set(x, y, z, B.air);
+    this.saplings.delete(key);
+    this.saplingsLost++;
   }
 }

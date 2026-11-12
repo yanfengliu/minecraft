@@ -10,13 +10,25 @@ import { type Page, expect, test } from '@playwright/test';
 
 const SOFTWARE = process.env.ALLOW_SOFTWARE_GL === '1';
 
-// A quarter-size island: the same generator and renderer, a fraction of the load time. It is too
+// An island a third as wide: the same generator and renderer, a fraction of the load time. It is too
 // small to hold the village, so the tests that need one load the full island.
 const SMALL = '/?size=256';
 const FULL = '/';
 
+/** What the page of the test in hand has thrown or logged as an error. */
+let pageErrors: string[] = [];
+
+// Every test ends with a clean console, whatever else it was about: an exception in a frame handler
+// leaves the page drawing, and the test that provoked it would otherwise pass.
+test.afterEach(() => {
+  const errors = pageErrors;
+  pageErrors = [];
+  expect(errors, 'errors on the page during the test').toEqual([]);
+});
+
 async function boot(page: Page, url = SMALL): Promise<string[]> {
   const errors: string[] = [];
+  pageErrors = errors;
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text().slice(0, 600));
@@ -96,10 +108,14 @@ test('night is dark and the day comes back', async ({ page }) => {
   }, hour);
   const noon = await brightness(12);
   const midnight = await brightness(0);
-  console.log(`mean brightness: noon ${noon.toFixed(1)}, midnight ${midnight.toFixed(1)}`);
+  // And on round the clock to the next morning: the light has to come back, not only go.
+  const morning = await brightness(9);
+  console.log(`mean brightness: noon ${noon.toFixed(1)}, midnight ${midnight.toFixed(1)}, the next morning ${morning.toFixed(1)}`);
   expect(noon).toBeGreaterThan(90);
   expect(midnight).toBeLessThan(noon * 0.45);
   expect(midnight).toBeGreaterThan(2);
+  expect(morning).toBeGreaterThan(80);
+  expect(morning).toBeGreaterThan(midnight * 2);
 });
 
 test('the player walks, jumps and lands under real key presses', async ({ page }) => {

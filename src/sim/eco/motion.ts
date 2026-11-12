@@ -393,6 +393,10 @@ export function movePaddler(e: Eco, a: Animal): void {
     a.cy = y;
     a.cz = iz;
     a.y = y + FLOAT;
+    // What is overhead changes from one column of water to the next (a bough, a lily, a step in the river),
+    // and a bird takes wing when the floor of open air over it is not what it settled under: so keep that
+    // current as it paddles, or it flies up for no reason whenever it passes under anything.
+    a.perchFloor = airFloor(w, ix, iz);
     e.hash.moved(a);
   }
   a.x = nx;

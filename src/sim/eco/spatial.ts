@@ -32,7 +32,10 @@ export class SpatialHash {
   }
 
   insert(a: Animal): void {
-    const c = this.cellOf(a.x, a.z);
+    this.link(a, this.cellOf(a.x, a.z));
+  }
+
+  private link(a: Animal, c: number): void {
     const head = this.heads[c] as Animal | null;
     a.hcell = c;
     a.hprev = null;
@@ -51,12 +54,20 @@ export class SpatialHash {
     a.hnext = null;
   }
 
-  /** Call when an animal has moved to another column; relinks it only if it changed cell. */
+  /**
+   * Call when an animal has entered another column, with its `cx` and `cz`
+   * already set to it; relinks it only if it changed cell. It is filed by that
+   * column, not by `x` and `z`: the movers call this as they cross, before they
+   * write the new position, and filed by the old one an animal that stopped
+   * just over a cell's edge stayed in the wrong cell, unseen by a search whose
+   * box did not reach back into it.
+   */
   moved(a: Animal): void {
-    if (a.hcell >= 0 && this.cellOf(a.x, a.z) !== a.hcell) {
-      this.remove(a);
-      this.insert(a);
-    }
+    if (a.hcell < 0) return;
+    const c = this.cellOf(a.cx, a.cz);
+    if (c === a.hcell) return;
+    this.remove(a);
+    this.link(a, c);
   }
 
   /**

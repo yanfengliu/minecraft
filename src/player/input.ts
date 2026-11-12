@@ -2,11 +2,16 @@
 // clicked into the game; without it, dragging with the left button looks
 // around, which is also how automated checks steer the camera.
 
+/** Keys the game uses that a browser would act on itself while the mouse is captured: scrolling and moving focus. */
+const CAPTURED_KEYS = new Set(['Space', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+
 export class Input {
   private readonly keys = new Set<string>();
   private readonly pressed = new Set<string>();
   private readonly canvas: HTMLCanvasElement;
   private dragging = false;
+  /** The browser would not give the mouse up, so the left button has to work without it. */
+  private lockRefused = false;
   /** Mouse movement since the last `consumeLook`, in pixels. */
   private lookX = 0;
   private lookY = 0;
@@ -23,7 +28,11 @@ export class Input {
       if (e.repeat) return;
       this.keys.add(e.code);
       this.pressed.add(e.code);
-      if (this.locked && ['Space', 'Tab', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
+      // F3 is the game's own readout; left alone, some browsers open their find bar on it as well.
+      if (e.code === 'F3' || (this.locked && CAPTURED_KEYS.has(e.code))) e.preventDefault();
+    });
+    document.addEventListener('pointerlockerror', () => {
+      this.lockRefused = true;
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => {
@@ -33,7 +42,12 @@ export class Input {
     });
     canvas.addEventListener('mousedown', (e) => {
       if (!this.enabled) return;
-      if (!this.locked && e.button === 0) this.dragging = true;
+      if (!this.locked && e.button === 0) {
+        this.dragging = true;
+        // The press that asks for the mouse, or that drags the view round, is not also a blow at whatever is
+        // under the crosshair: a plant there broke in a twentieth of a second.
+        if (!this.lockRefused) return;
+      }
       this.buttons.add(e.button);
       this.clicked.add(e.button);
     });
@@ -61,7 +75,10 @@ export class Input {
 
   /** Ask the browser to capture the mouse. Must be called from a click handler. */
   lock(): void {
-    if (!this.locked) void this.canvas.requestPointerLock()?.catch?.(() => undefined);
+    if (this.locked) return;
+    void this.canvas.requestPointerLock()?.catch?.(() => {
+      this.lockRefused = true;
+    });
   }
 
   unlock(): void {
@@ -73,9 +90,13 @@ export class Input {
     return this.enabled && this.keys.has(code);
   }
 
-  /** True once for each physical key press. */
-  hit(code: string): boolean {
-    return this.pressed.has(code);
+  /**
+   * True once for each physical key press. Like `down`, false while a panel
+   * has the keyboard, unless `always`: the interface's own keys (the ones that
+   * open and close panels) work whatever is open.
+   */
+  hit(code: string, always = false): boolean {
+    return (always || this.enabled) && this.pressed.has(code);
   }
 
   /** True once for each mouse button press. */
