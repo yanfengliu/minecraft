@@ -157,6 +157,15 @@ export class Renderer {
   private heightsAge = 0;
   /** The block to outline (world-space box) and how far along breaking it is, or null. */
   selection: { box: number[]; progress: number } | null = null;
+  /**
+   * True once the browser has taken the WebGL context away: the GPU was reset, its driver replaced,
+   * or too many pages wanted a context. Every texture, buffer and program went with it. From then on
+   * nothing is drawn and no mesh is taken in. Building it all again in place is not implemented, so
+   * the game can only say what happened and ask for a reload.
+   */
+  contextLost = false;
+  /** Called once, when the context is lost. */
+  onContextLost: (() => void) | null = null;
 
   private readonly targets: FrameTargets;
   private readonly drift = new Drift();
@@ -180,6 +189,12 @@ export class Renderer {
     this.canvas = canvas;
     this.world = world;
     this.settings = { ...settings };
+    // The event is not cancelled: cancelling asks the browser to hand the context back, empty, and nothing here could refill it.
+    canvas.addEventListener('webglcontextlost', () => {
+      if (this.contextLost) return;
+      this.contextLost = true;
+      this.onContextLost?.();
+    });
     this.frame = new FrameUniforms(gl);
     this.sections = new SectionStore(gl, world);
     this.shadows = new ShadowCascades(gl, this.settings.shadowResolution, this.settings.shadowDistance, this.settings.widestFov);
@@ -238,6 +253,8 @@ export class Renderer {
   }
 
   setMesh(section: number, mesh: MeshOutput | null): void {
+    // With the context gone there is nowhere to put a mesh, and asking for buffers would throw.
+    if (this.contextLost) return;
     this.sections.set(section, mesh);
   }
 
@@ -271,6 +288,7 @@ export class Renderer {
   }
 
   render(cam: Camera, env: Environment, info: FrameInfo): void {
+    if (this.contextLost) return;
     const gl = this.gl;
     this.resize();
     const { gbuffer, hdr, ao, width: w, height: h } = this.targets;
