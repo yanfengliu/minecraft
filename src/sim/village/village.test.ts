@@ -132,11 +132,27 @@ describe('village facade', () => {
     const wheatBefore = econ.villageStock(G.wheat);
     const offer = sim.quoteSell('wheat', 5)!;
     expect(Number.isInteger(offer)).toBe(true);
-    expect(offer).toBeGreaterThanOrEqual(0);
+    expect(offer).toBeGreaterThan(0);
     expect(sim.sell('wheat', 5)).toEqual({ ok: true, coins: offer });
     expect(econ.villageStock(G.wheat)).toBe(wheatBefore + 5);
     // Selling back is never a way to make money out of nothing.
     expect(sim.quoteSell('bread', 3)!).toBeLessThan(sim.quoteBuy('bread', 3)!);
+
+    // An offer is coins or it is no offer: a lot too small to be worth one is refused, not taken for nothing.
+    // A stick of firewood is worth less than a coin to anyone; a bundle is worth a few.
+    const firewoodBefore = econ.villageStock(G.firewood);
+    const paidOut = sim.ledger().playerNet;
+    expect(sim.quoteSell('firewood', 1)).toBeNull();
+    expect(sim.sell('firewood', 1)).toEqual({ ok: false, coins: 0 });
+    expect(econ.villageStock(G.firewood)).toBe(firewoodBefore);
+    expect(sim.ledger().playerNet).toBe(paidOut);
+    expect(sim.quoteSell('firewood', 8)!).toBeGreaterThan(0);
+    for (const good of ECONOMY_GOODS) {
+      for (let qty = 1; qty <= 12; qty++) {
+        const coins = sim.quoteSell(good, qty);
+        if (coins !== null) expect(coins, `${qty} ${good}`).toBeGreaterThan(0);
+      }
+    }
 
     ledger = sim.ledger();
     expect(ledger.coin - ledger.playerNet).toBe(before.coin);
@@ -196,7 +212,8 @@ describe('village facade', () => {
   });
 
   it('serves predators through the livestock api', () => {
-    const h = createHeadlessVillage(3);
+    let feathers = 0;
+    const h = createHeadlessVillage(3, { onEffect: (kind) => { if (kind === 'feathers') feathers++; } });
     h.step(HOUR);
     const { sim, plan } = h;
     const pen = plan.pens.find((p) => p.animal === 'chicken')!;
@@ -210,13 +227,23 @@ describe('village facade', () => {
     expect(herd.findLivestock(pen.x0 + 2, pen.z0 + 1, 200, ['chicken'])?.id).toBe(hen.id);
     expect(herd.findLivestock(pen.x0 + 2, pen.z0 + 1, 200, [])).toBeNull();
     const count = sim.views.length;
+    const lost = sim.stats.livestockLost;
+    expect(hen.anim).not.toBe('dead');
     sim.livestock.killLivestock(hen.id);
     expect(sim.views.length).toBe(count - 1);
     expect(sim.views.includes(hen)).toBe(false);
     expect(sim.livestock.findLivestock(pen.x0 + 2, pen.z0 + 1, 6)?.id).not.toBe(hen.id);
+    // A second fox on the same hen holds this view, not the list: it has to read as dead, or the hen is killed twice.
+    expect(hen.anim).toBe('dead');
     sim.livestock.killLivestock(hen.id);
     expect(sim.views.length).toBe(count - 1);
+    expect(sim.stats.livestockLost).toBe(lost + 1);
+    // Whoever made the kill shows it; the village raises no cue of its own, or the feathers would fly twice.
+    expect(feathers).toBe(0);
     h.step(HOUR * 2);
+    // Nothing in the village moves or wakes a dead animal afterwards.
+    expect(hen.anim).toBe('dead');
+    for (const v of sim.views) expect(v.anim).not.toBe('dead');
   });
 
   it('fishes and hunts through the wildlife api when there is one', () => {

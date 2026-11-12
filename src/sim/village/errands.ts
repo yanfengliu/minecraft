@@ -62,15 +62,21 @@ function servingCell(core: Core, b: Business): Cell {
 }
 
 /**
- * The seller that best covers a shopping list: mostly a matter of who has the
- * food, nudged toward good prices, a short walk, the market on Fairday, and
- * whichever kind of food the larder is short of so that diets stay mixed.
+ * The seller that best covers a shopping list for this shopper: mostly a
+ * matter of who has the food, nudged toward good prices, a short walk, the
+ * market on Fairday, and whichever kind of food the larder is short of so that
+ * diets stay mixed. Only what the shopper's purse can pay for counts: a full
+ * shelf at a price out of reach is no reason to walk there, and with nothing in
+ * reach anywhere there is no seller at all.
  */
-function pickSeller(core: Core, home: Household, list: ShoppingList): Business | null {
+function pickSeller(core: Core, econ: Economy, r: Resident, list: ShoppingList): Business | null {
+  const home = r.home;
   const bread = (home.larder[G.bread] as number) * (FOOD[G.bread] as number);
   const wantsBread = bread * 2 <= larderFood(home) + 0.5;
   const fair = marketOpen(core);
   const from = home.site.b.entry;
+  /** Units of a good on a business's shelf that this shopper could buy at least one of. */
+  const offers = (b: Business, g: number): number => (b.sells[g] && econ.buyable(b, g, 1, r) > 0 ? (b.stock[g] as number) : 0);
   let best: Business | null = null;
   let bestScore = 0.5;
   for (const b of core.businesses) {
@@ -78,7 +84,7 @@ function pickSeller(core: Core, home: Household, list: ShoppingList): Business |
     let dear = 0;
     let kinds = 0;
     for (const g of FOOD_GOODS) {
-      const n = b.sells[g] ? (b.stock[g] as number) : 0;
+      const n = offers(b, g);
       if (n <= 0) continue;
       food += n * (FOOD[g] as number);
       dear += (b.price[g] as number) / (VALUE[g] as number);
@@ -87,12 +93,12 @@ function pickSeller(core: Core, home: Household, list: ShoppingList): Business |
     let score = 0;
     if (list.food > 0 && food > 0) {
       const cheapness = Math.min(1.6, Math.max(0.6, kinds / dear));
-      const hasBread = b.sells[G.bread] === 1 && (b.stock[G.bread] as number) > 0;
+      const hasBread = offers(b, G.bread) > 0;
       score += Math.min(list.food, food) * 3 * cheapness * (hasBread === wantsBread ? 1.5 : 1);
     }
-    if (b.sells[G.firewood]) score += Math.min(list.firewood, b.stock[G.firewood] as number) * 0.6;
-    if (list.cloth > 0 && b.sells[G.cloth] && (b.stock[G.cloth] as number) > 0) score += 5;
-    if (list.tools > 0 && b.sells[G.tools] && (b.stock[G.tools] as number) > 0) score += 6;
+    score += Math.min(list.firewood, offers(b, G.firewood)) * 0.6;
+    if (list.cloth > 0 && offers(b, G.cloth) > 0) score += 5;
+    if (list.tools > 0 && offers(b, G.tools) > 0) score += 6;
     if (score <= 0) continue;
     if (fair && b.stall) score *= 1.5;
     const to = b.site.b.entry;
@@ -158,7 +164,7 @@ export function shop(core: Core, econ: Economy, r: Resident, days: number): bool
   if (!seller) {
     const list = shoppingList(core, home, days);
     if (!worthATrip(list) || r.coin <= 0) return false;
-    seller = pickSeller(core, home, list);
+    seller = pickSeller(core, econ, r, list);
     if (!seller) return false;
     r.targetId = seller.id;
     home.errand = r.id;

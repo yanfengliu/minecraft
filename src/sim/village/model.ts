@@ -207,12 +207,21 @@ export interface Resident {
   /** Clock time before which the resident will not speak again. */
   quietUntil: number;
   bubbleUntil: number;
-  /** Clock time a task may next try something it just failed at. */
-  retryAt: number;
+  // Waits. Each belongs to one task: two tasks sharing a wait would hold each other up.
+  /** Clock time before which someone hungry with a bare larder does not go to the shops again: they have just been, or nobody had anything their purse would cover. */
+  shopAgainAt: number;
+  /** Clock time before which a farmer does not go out for firewood again: the last load is just in, or there was no way to the wood. */
+  firewoodAt: number;
   /** Clock time before which an outdoor trade leaves its ground alone (fished-out water, a fruitless chase). */
   restUntil: number;
   /** Day the resident last drank at the tavern, and what they chose to do this evening. */
   evening: number;
+  /**
+   * Sittings left on the mug of ale in hand, 0 with none. Not task scratch,
+   * which is wiped whenever the goal changes: the mug is still in hand after
+   * an errand that came to nothing, and is not paid for twice.
+   */
+  mug: number;
   /** Water carried for the fields, in cells' worth, and trips to the well for it today. */
   water: number;
   waterTrips: number;

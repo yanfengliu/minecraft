@@ -19,7 +19,7 @@ import {
   type Business, MEAL_BREAKFAST, MEAL_LUNCH, MEAL_SUPPER, PACK_DELIVERY, PACK_HOME, PACK_JOB, PHASE_IDLE, type Resident, type Site,
 } from './model';
 import { HUNGER_PECKISH, HUNGER_URGENT, updateNeeds } from './needs';
-import { type Woods, fisherWork, hunterWork, minerWork, woodcutterWork } from './outdoor';
+import { fisherWork, hunterWork, minerWork } from './outdoor';
 import {
   type Parts, chapelService, homeEvening, lessons, marketVisit, onTheSquare, play, priestWork, reeveWork, stallSelling, tavernEvening,
 } from './pastimes';
@@ -27,6 +27,7 @@ import type { Social } from './social';
 import {
   DAWN_WATCH_STARTS, DUTY_DAWN, DUTY_DAY, DUTY_FIRST, FIRST_WATCH_ENDS, LAMPS_BEFORE_SUNSET, type Lights, dutyOf, guardPost, patrol,
 } from './watch';
+import { type Woods, woodcutterWork } from './woods';
 import { deliver, unloadAtJob, workshop } from './work';
 
 const GOAL_LEISURE = 0;
@@ -104,6 +105,7 @@ export class Routine {
       r.day = env.day;
       r.meals = 0;
       r.waterTrips = 0;
+      r.mug = 0;
       // Tonight's plan, fixed for the day: the tavern, the square, or home. Hashed, so it costs the random stream nothing.
       const roll = rand2(r.id, env.day, 7717);
       r.evening = r.child ? 0 : roll < 0.4 ? 1 : roll < 0.65 ? 2 : 0;
@@ -217,9 +219,10 @@ export class Routine {
       return GOAL_SLEEP;
     }
     if (r.hunger >= HUNGER_URGENT) return GOAL_MEAL;
-    // Lamps come before supper, at both ends of the night, and whoever of the watch is up lends a hand with them.
+    // Lamps come before supper, at both ends of the night, and whoever of the watch is up lends a hand with them:
+    // but only while there is a lamp this guard can do something about.
     const lit = this.lights.lampsWanted();
-    if (this.lights.lampsPending() && (lit ? h > 12 : h < 12)) return GOAL_LAMPS;
+    if ((lit ? h > 12 : h < 12) && this.lights.lampWaiting(r)) return GOAL_LAMPS;
     if (r.packKind === PACK_HOME) return GOAL_CARRY_HOME;
     const watchEnds = env.sunrise + 0.9;
     // The dawn watch eats before going out: it is a long cold while until sunrise.
@@ -278,7 +281,11 @@ export class Routine {
       case GOAL_CARRY_HOME: carryHome(core, r); return;
       case GOAL_SHOP:
         if (shop(core, econ, r, 3)) return;
+        // Nothing worth going for after all, so the time is the resident's own, and it is spent as leisure, under
+        // that goal. Left under this one, whatever leisure keeps in the scratch fields (a drinker's count of
+        // sittings on a mug) would be read back at the next thought as an errand begun.
         r.home.shopDay = core.env.day;
+        this.leave(r, GOAL_LEISURE);
         this.leisure(r);
         return;
       case GOAL_WATER:

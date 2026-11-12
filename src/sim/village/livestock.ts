@@ -62,11 +62,18 @@ export class Livestock implements LivestockApi {
     return best;
   }
 
+  /**
+   * A farm animal dies and is taken out of the village. Its view is marked
+   * dead as well as dropped: whoever else was after it holds that view, not
+   * the list, and has to see that it is gone. Whoever killed it shows the kill;
+   * no cue is raised here, or every fox's hen would shed its feathers twice.
+   */
   killLivestock(id: number): void {
     const core = this.core;
     const a = core.animals.find((an) => an.id === id);
     if (!a) return;
     a.alive = false;
+    a.view.anim = 'dead';
     this.routes.delete(a);
     stopMover(a.mover, core.doors);
     core.animals.splice(core.animals.indexOf(a), 1);
@@ -74,7 +81,6 @@ export class Livestock implements LivestockApi {
     const at = core.views.indexOf(a.view);
     if (at >= 0) core.views.splice(at, 1);
     core.stats.livestockLost++;
-    if (a.view.kind === 'chicken') core.ctx.actions.effect('feathers', a.view.x, a.view.y + 0.3, a.view.z);
   }
 
   // --- life in the pen -----------------------------------------------------------

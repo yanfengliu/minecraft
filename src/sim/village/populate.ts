@@ -159,8 +159,8 @@ function newResident(core: Core, id: number, home: Household, bed: Bed, child: b
     fxKind: '', fxEvery: 0, fxNext: 0, fxX: 0, fxY: 0, fxZ: 0,
     outdoor: false, running: false, selling: false, activity: 'Getting up', inside: -1, place: -1,
     pack: new Int32Array(NG), packKind: PACK_NONE, packCount: 0, haul: null,
-    day: -1, meals: 0, step: 0, target: null, targetId: 0, quietUntil: 0, bubbleUntil: 0, retryAt: 0, restUntil: 0, evening: 0, water: 0,
-    waterTrips: 0, field: null, plot: -1, op: 0, plotRetryAt: 0, goal: 0,
+    day: -1, meals: 0, step: 0, target: null, targetId: 0, quietUntil: 0, bubbleUntil: 0, shopAgainAt: 0, firewoodAt: 0, restUntil: 0,
+    evening: 0, mug: 0, water: 0, waterTrips: 0, field: null, plot: -1, op: 0, plotRetryAt: 0, goal: 0,
   };
   const start: Cell = bed.stand;
   placeMover(mover, core.world, core.doors, start.x, start.y, start.z);
