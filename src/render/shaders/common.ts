@@ -100,6 +100,30 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 `;
 
 /**
+ * Which face a pixel lies on, as the geometry passes record it in the G-buffer
+ * (the alpha of the light target) and the lighting pass reads it back. The
+ * stored normal cannot say: it leans with each tile's painted relief, which is
+ * right for shading and wrong for asking where the surface itself faces. Depth
+ * can be made to say (the ambient occlusion pass rebuilds a face from it), but
+ * not well enough for lighting: a neighbour across a crease bends the answer,
+ * and a few hundred metres out one step of the depth buffer is a fair part of
+ * the distance between two pixels. The geometry pass simply knows.
+ *
+ *   bits 0-2   0..5: the face looks along +x, -x, +y, -y, +z, -z (the mesher's order).
+ *              FACE_OWN: the stored normal is the face's own and carries no relief.
+ *              That is a creature's or a loose body's box, and a plant's crossed
+ *              cards, which are lit as the ground they grow from.
+ *   bit 3      foliage: cut-out leaves, plants and fittings.
+ */
+export const FACE_CODE = /* glsl */ `
+const vec3 FACE_NORMALS[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
+const uint FACE_OWN = 6u;
+float packFace(uint face, bool foliage) {
+  return float(face | (foliage ? 8u : 0u)) / 255.0;
+}
+`;
+
+/**
  * The net of bright lines that waves focus sunlight into on a bed under water.
  * Each line is the half-way contour of a drifting noise field, bent by a
  * second, slower field; two such nets at different scales cross. Returns about

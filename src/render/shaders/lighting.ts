@@ -3,7 +3,7 @@
 
 import { ATMOSPHERE_GLSL } from '../atmosphere';
 import { CLOUD_DENSITY } from './clouds';
-import { CAUSTICS, COMMON, FRAME_BLOCK } from './common';
+import { CAUSTICS, COMMON, FACE_CODE, FRAME_BLOCK } from './common';
 
 /** Cascaded shadow lookup. Needs uShadowMap, uShadowMat[4], uShadowSplit, uShadowTexel in scope. */
 export const SHADOWS = /* glsl */ `
@@ -87,6 +87,7 @@ vec3 applyFog(vec3 color, vec3 eye, vec3 world) {
 export const LIGHTING_FS = /* glsl */ `
 ${FRAME_BLOCK}
 ${COMMON}
+${FACE_CODE}
 ${ATMOSPHERE_GLSL}
 ${SHADOWS}
 ${FOG}
@@ -189,21 +190,34 @@ void main() {
   float sky = g2.r;
   float block = g2.g;
   float ao = g2.b;
-  float foliage = g2.a;
+  uint faceCode = uint(g2.a * 255.0 + 0.5);
+  float foliage = float(faceCode >> 3);
   float ssao = texture(uAO, vUV).r;
+
+  // --- the face this pixel lies on ---
+  // N leans with the tile's painted relief. That is right for shading, and wrong for whatever asks
+  // which way the surface itself faces: where to step off it for the shadow lookup, whether water
+  // would stand on it or snow lie on it. Those take F, the face as the geometry pass recorded it
+  // (see FACE_CODE), which is N itself only where N is the face's own.
+  uint face = faceCode & 7u;
+  vec3 F = face < 6u ? FACE_NORMALS[face] : N;
 
   // --- weather on surfaces ---
   // Open to the sky if nothing in this column stands above the point: the same map that stops the rain.
+  // The column asked about is the one the face looks into, half a block out from it. On a wall the
+  // point itself sits on the line between the wall's own column and the one in front, and rounding
+  // would put neighbouring pixels on different sides of it, wet and dry by turns.
+  vec2 column = world.xz + F.xz * 0.5;
   // Wind carries rain and snow a block in under an eave, so the ground there takes most of what falls
   // beside it; without that every roof draws a hard dry rectangle round its house.
-  float open = openTo(world.xz, world.y);
-  float beside = max(max(openTo(world.xz + vec2(1.0, 0.0), world.y), openTo(world.xz - vec2(1.0, 0.0), world.y)),
-                     max(openTo(world.xz + vec2(0.0, 1.0), world.y), openTo(world.xz - vec2(0.0, 1.0), world.y)));
+  float open = openTo(column, world.y);
+  float beside = max(max(openTo(column + vec2(1.0, 0.0), world.y), openTo(column - vec2(1.0, 0.0), world.y)),
+                     max(openTo(column + vec2(0.0, 1.0), world.y), openTo(column - vec2(0.0, 1.0), world.y)));
   open = max(open, beside * 0.8);
   // Snow settles on the land, not on whoever walks across it or on what they carry.
   open *= 1.0 - step(0.5, g1.a);
   float wet = uWeather.x * open;
-  float flatness = smoothstep(0.86, 0.98, N.y);
+  float flatness = smoothstep(0.86, 0.98, F.y);
   // Water gathers in the low patches of level ground once it has rained for a while.
   float puddle = wet * flatness * smoothstep(0.52, 0.7, fbm2(world.xz * 0.31)) * smoothstep(0.3, 0.75, uWeather.x) * (1.0 - foliage);
   albedo *= mix(1.0, 0.6, wet * (1.0 - 0.4 * foliage));
@@ -213,7 +227,7 @@ void main() {
   // Snow lies on what faces the sky, thicker with height, ragged at its edge.
   float snowLine = smoothstep(96.0, 112.0, world.y + 6.0 * fbm2(world.xz * 0.07));
   float snowAmount = max(uWeather.y, snowLine * 0.85);
-  float lie = smoothstep(0.25, 0.7, N.y + (fbm2(world.xz * 0.9) - 0.5) * 0.5);
+  float lie = smoothstep(0.25, 0.7, F.y + (fbm2(world.xz * 0.9) - 0.5) * 0.5);
   float snow = saturate(snowAmount * 1.3) * open * lie * smoothstep(0.0, 0.25, snowAmount + fbm2(world.xz * 0.23) * 0.3 - 0.15);
   albedo = mix(albedo, vec3(0.84, 0.89, 0.95), snow);
   rough = mix(rough, 0.62, snow);
@@ -223,7 +237,8 @@ void main() {
   // Leaves and grass let some light through from behind instead of going black.
   float wrap = foliage * 0.35;
   float lambert = saturate((ndl + wrap) / (1.0 + wrap));
-  float shadow = lambert > 0.0 ? keyShadow(world, N, saturate(ndl), dist, gl_FragCoord.xy) : 0.0;
+  // The lookup steps off the face along the face's own normal, by more the more the light grazes the face.
+  float shadow = lambert > 0.0 ? keyShadow(world, F, saturate(dot(F, L)), dist, gl_FragCoord.xy) : 0.0;
   shadow = mix(1.0, shadow, uLightDir.w) * cloudShadow(world);
 
   float occl = mix(0.42, 1.0, ao) * ssao;
@@ -234,7 +249,7 @@ void main() {
   vec3 direct = uLightColor.rgb * lambert * shadow * mix(1.0, occl, 0.35);
   // Seen from under water, the bed carries the moving net of light the waves focus onto it.
   // (Seen from above, the water surface adds it: see water.ts.)
-  if (uMisc.x > 0.5) direct *= 1.0 + (causticNet(world.xz + world.y * 0.3, uCameraPos.w) - 0.3) * 1.5 * saturate(N.y + 0.3);
+  if (uMisc.x > 0.5) direct *= 1.0 + (causticNet(world.xz + world.y * 0.3, uCameraPos.w) - 0.3) * 1.5 * saturate(F.y + 0.3);
   // Sky dome from above, ground bounce from below; a wall gets a good share of both.
   float up = N.y * 0.5 + 0.5;
   vec3 ambient = (mix(uAmbientGround.rgb, uAmbientSky.rgb, up) + uAmbientGround.rgb * (1.0 - abs(N.y)) * 0.6) * skyVis * occl;
