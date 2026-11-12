@@ -64,6 +64,11 @@ export class Hud {
     (this.el.panel as HTMLElement).addEventListener('pointerdown', (e) => {
       if (e.button === 0) this.click(e);
     });
+    // A button worked from the keyboard (Enter or Space on it) sends a click and no press. A click that
+    // follows a press has a count of one or more and was dealt with above; the keyboard's has none.
+    (this.el.panel as HTMLElement).addEventListener('click', (e) => {
+      if (e.detail === 0) this.click(e);
+    });
     const measure = (): void => {
       this.width = root.clientWidth;
       this.height = root.clientHeight;

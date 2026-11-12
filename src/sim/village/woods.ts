@@ -46,6 +46,10 @@ export class Woods {
     this.survey();
     const area = core.plan.forest;
     this.unsubscribe = core.world.changed.on((c) => {
+      // A tree whose foot is gone is no tree any more, whoever took it (the player's axe, a collapse, a
+      // woodcutter). Left on the list, the next thing set on its stump was felled for it: a post of
+      // somebody's building came down and a sapling was planted in its place.
+      if (IS_LOG[c.old] && !IS_LOG[c.state]) this.trees.delete(packCell(c.x, c.y, c.z));
       const species = speciesOfSapling(c.old);
       if (!species || c.state !== LOG_OF[species] || (c.x - area.x) ** 2 + (c.z - area.z) ** 2 > area.radius * area.radius) return;
       this.sprouts.push({ x: c.x, y: c.y, z: c.z, species });

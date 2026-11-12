@@ -317,6 +317,8 @@ export interface VillageStats {
   saplingsPlanted: number;
   fishCaught: number;
   animalsHunted: number;
+  /** Kills the hunter walked to and brought in; one shot and never reached is in `animalsHunted` alone. */
+  killsFetched: number;
   deliveries: number;
   purchases: number;
   lampsLit: number;
@@ -332,7 +334,7 @@ export interface VillageStats {
 export function emptyStats(): VillageStats {
   return {
     teleports: 0, pathFails: 0, meals: 0, almsMeals: 0, foraged: 0, breadBaked: 0, breadEaten: 0, cellsTilled: 0, cellsSown: 0,
-    cellsHarvested: 0, cellsWatered: 0, cropStages: 0, treesFelled: 0, saplingsPlanted: 0, fishCaught: 0, animalsHunted: 0,
+    cellsHarvested: 0, cellsWatered: 0, cropStages: 0, treesFelled: 0, saplingsPlanted: 0, fishCaught: 0, animalsHunted: 0, killsFetched: 0,
     deliveries: 0, purchases: 0, lampsLit: 0, eggsLaid: 0, woolShorn: 0, livestockBorn: 0, livestockLost: 0, greetings: 0, strays: 0,
   };
 }

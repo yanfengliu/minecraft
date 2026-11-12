@@ -90,6 +90,20 @@ const DIRECT_REACH = 12;
 const ROUGH_GROUND = 3;
 /** Expansions allowed per block of straight-line distance; measured routes over hills and round a river need about 110. */
 const EXPANSIONS_PER_BLOCK = 260;
+/** The most any search may spend, however far its goal: about what 300 blocks ask for, farther than anyone on the island walks to work. */
+const MOST_EXPANSIONS = 80000;
+/** Goals within this many blocks are short walks and are searched in a queue of their own, ahead of the long ones. */
+const NEAR_REACH = 48;
+/** Share of a tick's budget kept for a long search while there is one, so that short walks cannot starve it. */
+const FAR_SHARE = 0.4;
+
+/** A queue of route requests with a searcher of its own. */
+interface Lane {
+  readonly queue: PathRequest[];
+  head: number;
+  active: PathRequest | null;
+  readonly search: AStar;
+}
 
 export class Navigator {
   readonly stats: NavStats = { requests: 0, cacheHits: 0, direct: 0, searches: 0, found: 0, failed: 0, expansions: 0, invalidated: 0 };
@@ -102,13 +116,12 @@ export class Navigator {
 
   /** What can be stood in and what a step costs, remembered between searches and shared by both searchers. */
   private readonly grid: WalkGrid;
-  private readonly search: AStar;
-  /** A second searcher for `findNow`, so a synchronous lookup never disturbs a search in flight. */
+  /** Requests for goals within `NEAR_REACH`, and those beyond: each queue has its own searcher. */
+  private readonly near: Lane;
+  private readonly far: Lane;
+  /** A third searcher for `findNow`, so a synchronous lookup never disturbs a search in flight. */
   private quick: AStar | null = null;
 
-  private readonly queue: PathRequest[] = [];
-  private queueHead = 0;
-  private active: PathRequest | null = null;
   private budget: number;
 
   private readonly routes = new Map<number, Map<number, Path>>();
@@ -127,7 +140,8 @@ export class Navigator {
     this.cacheLimit = options.cacheLimit ?? 6000;
     this.budget = this.budgetPerTick;
     this.grid = new WalkGrid(world, this.walk);
-    this.search = new AStar(world, this.walk, this.grid);
+    this.near = { queue: [], head: 0, active: null, search: new AStar(world, this.walk, this.grid) };
+    this.far = { queue: [], head: 0, active: null, search: new AStar(world, this.walk, this.grid) };
     this.unsubscribe = world.changed.on((c) => this.onChange(c));
   }
 
@@ -139,7 +153,7 @@ export class Navigator {
   /** Call once per tick: refills the budget and carries on with queued searches. */
   update(): void {
     this.budget = this.budgetPerTick;
-    if (this.active || this.queueHead < this.queue.length) this.pump();
+    this.pump();
   }
 
   /**
@@ -157,7 +171,7 @@ export class Navigator {
       req.path = hit;
       return req;
     }
-    this.queue.push(req);
+    (Math.hypot(gx - sx, gz - sz) <= NEAR_REACH ? this.near : this.far).queue.push(req);
     this.pump();
     return req;
   }
@@ -244,27 +258,45 @@ export class Navigator {
    * take 18,000 to 23,000, so the allowance grows with the distance.
    */
   private limitFor(sx: number, sz: number, gx: number, gz: number): number {
-    return Math.max(this.maxExpansions, Math.round(Math.hypot(gx - sx, gz - sz) * EXPANSIONS_PER_BLOCK));
+    const byDistance = Math.round(Math.hypot(gx - sx, gz - sz) * EXPANSIONS_PER_BLOCK);
+    return Math.max(this.maxExpansions, Math.min(byDistance, Math.max(this.maxExpansions, MOST_EXPANSIONS)));
   }
 
   // -------------------------------------------------------------------------
 
+  /**
+   * Spend what is left of this tick's budget. Short walks are answered first,
+   * and a long search takes what remains, which is never less than its own
+   * share while it has work. Each has a searcher of its own, so neither waits
+   * for the other to finish: with one queue, a search for a goal far away that
+   * could not be reached held every walk across the square behind it until it
+   * gave up, twenty-five seconds for a goal across the island.
+   */
   private pump(): void {
-    while (this.budget > 0) {
-      if (!this.active) {
+    const far = this.far;
+    const reserve = far.active || far.head < far.queue.length ? Math.floor(this.budget * FAR_SHARE) : 0;
+    this.budget = reserve + this.serve(this.near, this.budget - reserve);
+    this.budget = this.serve(far, this.budget);
+    if (this.budget > 0) this.budget = this.serve(this.near, this.budget);
+  }
+
+  /** Work one lane's queue with up to `budget` expansions, in the order asked. Returns what is left of the budget. */
+  private serve(lane: Lane, budget: number): number {
+    while (budget > 0) {
+      if (!lane.active) {
         let next: PathRequest | null = null;
-        while (this.queueHead < this.queue.length) {
-          const candidate = this.queue[this.queueHead++] as PathRequest;
+        while (lane.head < lane.queue.length) {
+          const candidate = lane.queue[lane.head++] as PathRequest;
           if (!candidate.cancelled) {
             next = candidate;
             break;
           }
         }
-        if (this.queueHead === this.queue.length) {
-          this.queue.length = 0;
-          this.queueHead = 0;
+        if (lane.head === lane.queue.length) {
+          lane.queue.length = 0;
+          lane.head = 0;
         }
-        if (!next) return;
+        if (!next) return budget;
         // An identical request earlier in the queue may have filled the cache meanwhile.
         const hit = next.cache ? this.lookup(packCell(next.sx, next.sy, next.sz), packCell(next.gx, next.gy, next.gz)) : null;
         if (hit) {
@@ -272,18 +304,18 @@ export class Navigator {
           next.path = hit;
           continue;
         }
-        this.active = next;
+        lane.active = next;
         this.stats.searches++;
-        this.search.begin(next.sx, next.sy, next.sz, next.gx, next.gy, next.gz, this.limitFor(next.sx, next.sz, next.gx, next.gz));
+        lane.search.begin(next.sx, next.sy, next.sz, next.gx, next.gy, next.gz, this.limitFor(next.sx, next.sz, next.gx, next.gz));
       }
-      const req = this.active;
-      const search = this.search;
+      const req = lane.active;
+      const search = lane.search;
       if (search.state === SEARCH_RUNNING && !req.cancelled) {
-        const used = search.run(this.budget);
+        const used = search.run(budget);
         // A search that ends without expanding anything must still cost something, or a queue of hopeless requests would spin here.
-        this.budget -= Math.max(used, 1);
+        budget -= Math.max(used, 1);
         this.stats.expansions += used;
-        if (search.state === SEARCH_RUNNING) return;
+        if (search.state === SEARCH_RUNNING) return Math.max(budget, 0);
       }
       if (search.state === SEARCH_FOUND && !req.cancelled) {
         const path = search.path();
@@ -295,8 +327,9 @@ export class Navigator {
         req.status = PATH_FAILED;
         if (!req.cancelled) this.stats.failed++;
       }
-      this.active = null;
+      lane.active = null;
     }
+    return Math.max(budget, 0);
   }
 
   private lookup(from: number, to: number): Path | null {

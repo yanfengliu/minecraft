@@ -38,6 +38,9 @@ const SAPLING_GIVE_UP = 14;
 const SAPLING_LIGHT = 12;
 /** Ticks between one sapling becoming a tree and the next, when several are ready in the same hour. */
 const GROW_SPACING = 20;
+/** How far out from the trunk, and how far up from its foot, a crown can reach: the space kept clear of buildings. */
+const CROWN_REACH = 5;
+const CROWN_HEIGHT = 14;
 /** Woodland may spread onto grass until it covers this much more than it did at the start. */
 const WOOD_GROWTH = 1.12;
 /** One visit per tick for every this many columns of world, so each column is seen about once a day. */
@@ -358,6 +361,28 @@ export class Flora {
     return true;
   }
 
+  /**
+   * True if anything built stands in the space the crown will open into: five
+   * blocks to every side of the trunk (a big oak's limbs reach that far), from
+   * the sapling's own level to the top of the tallest tree. Looking only at the
+   * sapling's level and below missed a house standing two blocks higher on a
+   * terrace, and the crown grew in through its walls. Other trees' wood and
+   * leaves are not building, and neither is the hillside. (Nor, to this test,
+   * is a cabin of bare logs: wood set down by hand cannot be told from a trunk.)
+   */
+  private builtInCrown(x: number, y: number, z: number): boolean {
+    const w = this.world;
+    for (let dy = 0; dy <= CROWN_HEIGHT; dy++) {
+      for (let dz = -CROWN_REACH; dz <= CROWN_REACH; dz++) {
+        for (let dx = -CROWN_REACH; dx <= CROWN_REACH; dx++) {
+          const s = w.get(x + dx, y + dy, z + dz);
+          if (SOLID[s] && !NATURAL[s] && !IS_LEAVES[s] && !IS_LOG[s]) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   private roomToGrow(x: number, y: number, z: number): boolean {
     const w = this.world;
     for (let dz = -2; dz <= 2; dz++) {
@@ -398,7 +423,7 @@ export class Flora {
         // Nor ever beside something built. Seeds do not fall there, but a sapling planted by hand against a
         // house did become a tree, and its crown filled the rooms with leaves. Such a sapling stands its
         // fortnight and dies, as one in deep shade does. (Other trunks near it are `roomToGrow`'s business.)
-        if (!this.clearForTree(x, y, z, false)) {
+        if (!this.clearForTree(x, y, z, false) || this.builtInCrown(x, y, z)) {
           if (age > SAPLING_GIVE_UP) this.wither(key, x, y, z);
           continue;
         }

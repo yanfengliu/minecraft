@@ -198,6 +198,7 @@ function hunt(core: Core, econ: Economy, r: Resident): boolean {
         const got = wild.harvest(id);
         // Nothing, if it lay too long and was cleared away.
         if (!got) return;
+        core.stats.killsFetched++;
         gather(econ, r, G.meat, got.meat, PACK_JOB);
         gather(econ, r, G.hide, got.hide, PACK_JOB);
         // The ground is left quiet after a kill, and longer after a deer than after a rabbit.

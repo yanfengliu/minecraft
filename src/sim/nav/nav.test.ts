@@ -219,6 +219,49 @@ describe('pathfinding', () => {
     expect(near.stats.expansions).toBeLessThanOrEqual(14000);
   });
 
+  it('answers a short walk while a long search is still looking, and starves neither', () => {
+    const world = createFlatWorld(256, 96, 31);
+    // A wall the whole width of the world: the far side cannot be reached, and a search for a goal there
+    // floods everything on the near side, some 19,000 cells, before it gives up.
+    for (let z = 0; z < 96; z++) wall(world, 200, z, 200, z);
+    const nav = new Navigator(world);
+    const far = nav.request(10, G, 48, 240, G, 48, false);
+    const near = nav.request(20, G, 20, 40, G, 30, false);
+    let ticks = 0;
+    while (near.status === PATH_PENDING && ticks < 400) {
+      nav.update();
+      ticks++;
+    }
+    // Within a tick or two. In one queue behind the long search it waited 28 ticks, and 250 behind a
+    // search across a whole island.
+    expect(near.status).toBe(PATH_FOUND);
+    expect(ticks).toBeLessThanOrEqual(2);
+    expect(far.status).toBe(PATH_PENDING);
+    // Nor does a stream of short walks starve the long search: it still comes to its end.
+    let more = 0;
+    while (far.status === PATH_PENDING && more < 400) {
+      nav.request(20, G, 20, 40 + (more % 5), G, 30 + (more % 7), false);
+      nav.update();
+      more++;
+    }
+    expect(far.status).toBe(PATH_FAILED);
+    expect(more).toBeLessThan(120);
+
+    // However far the goal, a search's allowance has a ceiling: an unreachable corner of the map is given up
+    // on, where it would otherwise be searched for with the whole budget for as long as the distance allowed.
+    const big = createFlatWorld(768, 768, 31);
+    for (let z = 0; z < 768; z++) wall(big, 700, z, 700, z);
+    const wide = new Navigator(big);
+    const lost = wide.request(20, G, 384, 740, G, 384, false);
+    let spent = 0;
+    while (lost.status === PATH_PENDING && spent < 2000) {
+      wide.update();
+      spent++;
+    }
+    expect(lost.status).toBe(PATH_FAILED);
+    expect(wide.stats.expansions).toBeLessThanOrEqual(80000);
+  });
+
   it('wades shallow water but refuses deep water', () => {
     const shallow = createFlatWorld(64, 64, 31);
     for (let z = 0; z < 64; z++) for (let x = 40; x <= 41; x++) shallow.set(x, G, z, waterState(4));

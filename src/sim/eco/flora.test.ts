@@ -327,6 +327,39 @@ describe('the seasons and the weather', () => {
   });
 });
 
+describe('saplings that are ready together', () => {
+  it('come up one to a tick, not all in the tick the hour turns', () => {
+    const rig = makeRig({ ...plantsOnly, startDay: 0 });
+    const world = rig.world;
+    const m = FIXTURE.meadow;
+    // Nine saplings set out on the same day, well apart. Each stands three to five days by where it is,
+    // so several are due in the same hour of the same day.
+    const set: { x: number; y: number; z: number }[] = [];
+    for (let i = 0; i < 9; i++) {
+      const x = m.x - 16 + (i % 3) * 16;
+      const z = m.z - 16 + Math.floor(i / 3) * 16;
+      const y = world.height(x, z);
+      world.set(x, y, z, B.oak_sapling);
+      set.push({ x, y, z });
+    }
+    let grown = rig.eco.stats().treesGrown;
+    let mostAtOnce = 0;
+    let ticksWithATree = 0;
+    for (let t = 0; t < 7 * 14400; t++) {
+      rig.ticks(1);
+      const now = rig.eco.stats().treesGrown;
+      if (now > grown) ticksWithATree++;
+      mostAtOnce = Math.max(mostAtOnce, now - grown);
+      grown = now;
+    }
+    const trees = set.filter((s) => world.get(s.x, s.y, s.z) === B.oak_log).length;
+    expect(trees).toBeGreaterThanOrEqual(7);
+    // A tree is some hundreds of block writes, each relit and meshed: nine in one tick was a frame the player saw drop.
+    expect(mostAtOnce).toBe(1);
+    expect(ticksWithATree).toBeGreaterThanOrEqual(trees);
+  });
+});
+
 describe('where a sapling may not become a tree', () => {
   it('waits while someone stands by it, and never grows against something built', () => {
     const someone: EntityView = { id: 7, kind: 'villager', look: 0, role: 0, x: 0, y: 0, z: 0, yaw: 0, anim: 'idle', animTime: 0, scale: 1, held: -1, bubble: '' };
@@ -341,6 +374,19 @@ describe('where a sapling may not become a tree', () => {
     const free = plant(m.x, m.z);
     const watched = plant(m.x + 14, m.z);
     const walled = plant(m.x, m.z + 14);
+    const below = plant(m.x + 14, m.z + 14);
+    // A shut plank room on stilts beside the fourth: its floor two blocks above the sapling's foot, so
+    // nothing built is level with the sapling at all.
+    const room: [number, number, number][] = [];
+    for (let dx = 2; dx <= 6; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        for (let up = 2; up <= 6; up++) {
+          const shell = dx === 2 || dx === 6 || dz === -2 || dz === 2 || up === 2 || up === 6;
+          if (shell) room.push([below.x + dx, below.y + up, below.z + dz]);
+        }
+      }
+    }
+    for (const [x, y, z] of room) world.set(x, y, z, B.oak_planks);
     // Somebody stands two blocks from one sapling, and a plank wall three high two blocks from another.
     Object.assign(someone, { x: watched.x + 2.5, y: watched.y, z: watched.z + 0.5 });
     const wall: [number, number, number][] = [];
@@ -357,8 +403,12 @@ describe('where a sapling may not become a tree', () => {
     Object.assign(someone, { x: 4.5, z: 4.5 });
     rig.days(1);
     expect(what(watched)).toBe(B.oak_log);
-    rig.days(6);
+    rig.days(9);
     expect(what(walled)).toBe(B.air);
+    // Nor did the one under the raised room ever grow: nothing has come up through its floor or its walls.
+    expect(what(below)).toBe(B.air);
+    for (const [x, y, z] of room) expect(world.get(x, y, z)).toBe(B.oak_planks);
+    for (let dx = 3; dx <= 5; dx++) for (let dz = -1; dz <= 1; dz++) for (let up = 3; up <= 5; up++) expect(world.get(below.x + dx, below.y + up, below.z + dz)).toBe(B.air);
     for (const [x, y, z] of wall) expect(world.get(x, y, z)).toBe(B.oak_planks);
     for (let dz = -2; dz <= 2; dz++) for (let up = 0; up < 3; up++) expect(IS_LEAVES[world.get(walled.x + 3, walled.y + up, walled.z + dz)]).toBe(0);
   });

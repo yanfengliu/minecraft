@@ -205,6 +205,38 @@ describe('fluid', () => {
     expect(world.get(24, GROUND + 1, 24)).toBe(B.air);
   });
 
+  it('finds room for displaced water across a full pool, round a ledge and far up a shaft', () => {
+    const world = createFlatWorld(64, 64, GROUND);
+    const { fluid } = setup(world);
+    // A full pool 3 x 3 and two deep, with one block of ceiling over its middle column and open sky over the rest.
+    basin(world, 20, 20, 22, 22, 3);
+    fill(world, 20, GROUND + 1, 20, 22, GROUND + 2, 22, waterState(16));
+    world.setRaw(21, GROUND + 3, 21, B.stone);
+    const pool = 18 * 16;
+    settle(fluid, 50);
+    expect(totalUnits(world)).toBe(pool);
+    // A block set in the bottom of the middle column: every cell beside it is full, and so is the one
+    // above it, which lies under the ceiling. The room is one cell over and two up.
+    world.set(21, GROUND + 1, 21, B.stone);
+    expect(fluid.lost).toBe(0);
+    expect(totalUnits(world)).toBe(pool);
+    settle(fluid, 300);
+    expect(totalUnits(world)).toBe(pool);
+
+    // A shaft of water twenty-four deep, open at the top: a block at its foot lifts the whole column.
+    const top = GROUND + 24;
+    expect(top + 1).toBeLessThan(world.sy);
+    for (let y = GROUND + 1; y <= top + 1; y++) {
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) world.setRaw(40 + dx, y, 40 + dz, B.stone);
+    }
+    fill(world, 40, GROUND + 1, 40, 40, top, 40, waterState(16));
+    const before = totalUnits(world);
+    world.set(40, GROUND + 1, 40, B.stone);
+    expect(fluid.lost).toBe(0);
+    expect(totalUnits(world)).toBe(before);
+    expect(WATER_LEVEL[world.get(40, top + 1, 40)]).toBe(16);
+  });
+
   it('moves water aside when anything is put where it stands, and loses none', () => {
     const world = createFlatWorld(64, 64, GROUND);
     const { fluid, events } = setup(world);

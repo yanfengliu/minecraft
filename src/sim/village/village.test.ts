@@ -7,6 +7,7 @@ import { B } from '../../world/blocks';
 import { ECONOMY_GOODS } from '../../world/items';
 import { ANIM_STATES, type EntityView, type WildlifeApi, validateVillagePlan } from '../api';
 import { DAY_SECONDS, FAIR_DAY } from '../clock';
+import { interrupt } from './agent';
 import { G, PROFESSIONS, TRADE } from './goods';
 import { type Headless, TICKS_PER_DAY, countCoin, createHeadlessVillage } from './headless';
 import type { Livestock } from './livestock';
@@ -310,6 +311,48 @@ describe('village facade', () => {
     const carried = sim.core.residents.filter((r) => r.job === hunter).reduce((n, r) => n + r.pack[G.meat]!, 0);
     expect(hunter.stock[G.meat]! + carried + sim.economy.villageStock(G.meat)).toBeGreaterThan(meat);
     expect(sim.economy.produced[G.meat]).toBe(fetched * 3);
+  });
+
+  it('fetches a kill that is down before answering hunger or the clock', () => {
+    const BODY = 100_123;
+    let fetched = 0;
+    const wildlife: WildlifeApi = {
+      findAnimal: () => null,
+      shoot: () => false,
+      harvest(id) {
+        if (id !== BODY || fetched > 0) return null;
+        fetched++;
+        return { meat: 5, hide: 2 };
+      },
+      fishAbundance: () => 0,
+      catchFish: () => false,
+    };
+    const h = createHeadlessVillage(3, { wildlife });
+    h.weather.force('clear');
+    const { sim } = h;
+    const hunter = sim.core.residents.find((r) => r.trade === TRADE.hunter)!;
+    // A working morning, with the hunter out on the ground and nothing in sight.
+    h.runTo(0, 10);
+    for (let i = 0; i < 6000 && hunter.activity !== 'Out hunting'; i++) h.step(1);
+    expect(hunter.activity).toBe('Out hunting');
+    // Then a deer is down by the well (as if just shot), and the hunter is ravenous: the meal would come
+    // first by the timetable, and with it the morning's plans were forgotten and the kill left to rot.
+    // (Whatever the hunter was in the middle of is broken off first, as the shot's own ending would leave it:
+    // the watch in hand would otherwise finish and clear the target it thinks is its own.)
+    interrupt(sim.core, hunter);
+    hunter.targetId = BODY;
+    hunter.target = { ...sim.core.plan.well };
+    hunter.hunger = 0.99;
+    const eaten = hunter.meals;
+    for (let i = 0; i < 6000 && fetched === 0; i++) h.step(1);
+    expect(fetched).toBe(1);
+    expect(sim.stats.killsFetched).toBe(1);
+    expect(hunter.pack[G.meat]! + hunter.pack[G.hide]!).toBe(7);
+    // The hunter did not stop to eat on the way to it, and is not kept from eating once it is in hand.
+    expect(hunter.meals).toBe(eaten);
+    expect(hunter.targetId).toBe(0);
+    h.step(3000);
+    expect(hunter.hunger).toBeLessThan(0.9);
   });
 
   it('falls back to plain luck for fishing and hunting without wildlife', () => {

@@ -50,14 +50,23 @@ describe('the island, lived in', () => {
     let inForest = 0;
     let stalking = 0;
     let slowest = 0;
+    // Blocks written in the tick in hand, and the most in any one tick: what a tick costs the game is mostly
+    // what it writes, since every write is relit and its section meshed again.
+    let writes = 0;
+    let mostWrites = 0;
+    world.changed.on(() => {
+      writes++;
+    });
     const steps = Math.round((HOURS * 60) / SIM_DT);
     for (let i = 0; i < steps; i++) {
       clock.advance(SIM_DT);
       weather.update(SIM_DT);
+      writes = 0;
       const began = performance.now();
       life.tick();
       // The first ticks fill the caches that every later one reads.
       if (i > 50) slowest = Math.max(slowest, performance.now() - began);
+      mostWrites = Math.max(mostWrites, writes);
       if (i % 600 !== 0) continue;
       for (const r of village.core.residents) {
         const v = r.view;
@@ -73,9 +82,9 @@ describe('the island, lived in', () => {
     const after = eco.census();
     console.log(
       `island, ${HOURS} hours: ${people} people, ${village.views.length - people} farm animals, ${eco.views.length} wild; meals ${s.meals}, bread ${s.breadBaked}, `
-      + `fish ${s.fishCaught}, hunted ${s.animalsHunted}, trees felled ${s.treesFelled}, lamps lit ${s.lampsLit}, sown ${s.cellsSown}; `
+      + `fish ${s.fishCaught}, hunted ${s.animalsHunted} (${s.killsFetched} fetched), trees felled ${s.treesFelled}, lamps lit ${s.lampsLit}, sown ${s.cellsSown}; `
       + `route failures ${s.pathFails}, teleports ${s.teleports}, strays ${s.strays}; forest ${walk(forest).toFixed(0)} and hunting ground ${walk(hunting).toFixed(0)} blocks out; `
-      + `woodcutters seen in the forest ${inForest} times, the hunter on a stalk ${stalking} times; slowest tick ${slowest.toFixed(1)} ms`,
+      + `woodcutters seen in the forest ${inForest} times, the hunter on a stalk ${stalking} times; slowest tick ${slowest.toFixed(1)} ms, most blocks written in one ${mostWrites}`,
     );
 
     // The village lived a day: everyone still there, fed, on their feet, and found their way.
@@ -94,6 +103,8 @@ describe('the island, lived in', () => {
     expect(inForest, 'a woodcutter was seen in the forest').toBeGreaterThan(0);
     expect(stalking, 'the hunter was seen after game').toBeGreaterThan(0);
     expect(s.animalsHunted, 'the hunter brought something down').toBeGreaterThan(0);
+    // And walked to it and carried it home: a kill may still be lying at the end of the run, but none is forgotten.
+    expect(s.animalsHunted - s.killsFetched, 'kills shot and never brought in').toBeLessThanOrEqual(1);
 
     // The wildlife is all still there.
     expect(after.length).toBe(kinds);
@@ -109,10 +120,12 @@ describe('the island, lived in', () => {
     expect(landed).toBeLessThanOrEqual(s.fishCaught);
     expect(taken).toBe(s.animalsHunted);
 
-    // No tick stalls a frame: a simulation step that takes a twentieth of a second is a hitch the player
-    // sees. (Every sapling due on a day once became a tree in the same tick, and that tick took 120 ms.)
-    // Wall clock on a shared machine, so the limit is several times what the slowest tick takes alone.
-    expect(slowest).toBeLessThan(60);
+    // No tick does a frame's worth of work at once. What is held to is the blocks one tick writes, not the
+    // time it takes: time on a shared machine says as much about the neighbours (the same run has measured
+    // 13 ms alone and 94 ms beside the rest of the suite), and each write is what costs the game, in light
+    // and in meshing. One felled tree is some 170 writes. Every sapling due on a day once became a tree in
+    // the same tick, 120 ms of it; `flora.test.ts` holds trees to one a tick, and this holds everything else.
+    expect(mostWrites).toBeLessThan(600);
 
     // And the wild animals have kept out of the built-up middle (foxes may slip in at night).
     const inside = eco.views.filter((v) => v.kind !== 'fox' && v.kind !== 'songbird' && v.kind !== 'crow' && v.kind !== 'gull' && Math.hypot(v.x - center.x, v.z - center.z) < 40);

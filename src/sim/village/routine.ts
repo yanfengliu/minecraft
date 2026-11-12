@@ -113,6 +113,10 @@ export class Routine {
     let goal = r.child ? this.chooseChild(r) : r.trade === TRADE.guard ? this.chooseGuard(r) : this.chooseAdult(r);
     // Goods carried for the workplace are put down there before anything but work, food and sleep.
     if (r.packKind === PACK_JOB && r.packCount > 0 && r.job && goal !== GOAL_WORK && goal !== GOAL_SLEEP && goal !== GOAL_MEAL) goal = GOAL_UNLOAD;
+    // A hunter with a kill lying in the field fetches it before anything else is thought of. It is a walk
+    // of a few seconds; left for the midday meal, the body was gone when they came back, the place where it
+    // lay was forgotten with the rest of the morning's plans, and an animal had died for nothing.
+    if (r.trade === TRADE.hunter && r.goal === GOAL_WORK && r.targetId > 0 && r.target) goal = GOAL_WORK;
     if (goal !== r.goal) this.leave(r, goal);
     if (goal !== GOAL_SLEEP && r.asleep) r.asleep = false;
     this.run(r, goal);

@@ -26,6 +26,17 @@ function market(coins: number): { trade: Trade; inv: Inventory; dropped: [number
   return { trade, inv, dropped, village };
 }
 
+/**
+ * Something to eat that the shelves hold at least three of right now. Which it is depends on the hour: at
+ * eleven on fair day the bread may be down to a loaf or two on the stalls while the larders are full, and
+ * these tests are about buying and selling, not about bread.
+ */
+function onTheShelves(village: ReturnType<typeof createHeadlessVillage>): string {
+  const good = ['bread', 'turnip', 'cabbage', 'fish', 'egg', 'ale', 'flour', 'wheat'].find((g) => village.sim.quoteBuy(g, 3) !== null);
+  if (!good) throw new Error('the village has three of nothing to sell on fair day');
+  return good;
+}
+
 /** Coin the village holds, less what the player has put in: constant if no coin is made or lost. */
 const closed = (v: ReturnType<typeof createHeadlessVillage>): number => {
   const l = v.sim.ledger();
@@ -35,23 +46,24 @@ const closed = (v: ReturnType<typeof createHeadlessVillage>): number => {
 describe('trading with the village', () => {
   it('moves goods and coin both ways and loses none', () => {
     const { trade, inv, village } = market(200);
-    const bread = item('bread').id;
+    const good = onTheShelves(village);
+    const bread = item(good).id;
     const before = closed(village);
-    const stock = village.sim.ledger().goods.find((g) => g.good === 'bread')!.stock;
-    const price = village.sim.quoteBuy('bread', 3);
+    const stock = village.sim.ledger().goods.find((g) => g.good === good)!.stock;
+    const price = village.sim.quoteBuy(good, 3);
     expect(price).not.toBeNull();
 
-    expect(trade.buy('bread', 3)).toBe(true);
+    expect(trade.buy(good, 3)).toBe(true);
     expect(inv.count(bread)).toBe(3);
     expect(inv.coins).toBe(200 - (price as number));
-    expect(village.sim.ledger().goods.find((g) => g.good === 'bread')!.stock).toBe(stock - 3);
+    expect(village.sim.ledger().goods.find((g) => g.good === good)!.stock).toBe(stock - 3);
     expect(closed(village)).toBe(before);
 
     // Selling straight back fetches less than was paid: the village buys below its own asking price.
-    const offer = village.sim.quoteSell('bread', 3);
+    const offer = village.sim.quoteSell(good, 3);
     expect(offer).not.toBeNull();
     expect(offer as number).toBeLessThan(price as number);
-    expect(trade.sell('bread', 3)).toBe(true);
+    expect(trade.sell(good, 3)).toBe(true);
     expect(inv.count(bread)).toBe(0);
     expect(inv.coins).toBe(200 - (price as number) + (offer as number));
     expect(closed(village)).toBe(before);
@@ -93,14 +105,15 @@ describe('trading with the village', () => {
   });
 
   it('hands over what does not fit in the pack instead of losing it', () => {
-    const { trade, inv, dropped } = market(500);
+    const { trade, inv, dropped, village } = market(500);
+    const good = onTheShelves(village);
     const stone = item('stone').id;
-    // Fill every slot but leave room for one more loaf in a stack.
+    // Fill every slot but leave room for one more of it in a stack.
     for (let i = 0; i < SLOTS; i++) inv.slots[i] = { item: stone, count: 99 };
-    inv.slots[0] = { item: item('bread').id, count: 98 };
-    expect(trade.buy('bread', 3)).toBe(true);
-    expect(inv.count(item('bread').id)).toBe(99);
-    expect(dropped).toEqual([[item('bread').id, 2]]);
+    inv.slots[0] = { item: item(good).id, count: 98 };
+    expect(trade.buy(good, 3)).toBe(true);
+    expect(inv.count(item(good).id)).toBe(99);
+    expect(dropped).toEqual([[item(good).id, 2]]);
   });
 
   it('stops when the seller leaves the counter', () => {

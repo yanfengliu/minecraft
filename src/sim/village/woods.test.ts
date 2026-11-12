@@ -197,6 +197,30 @@ describe('what the woodcutters take for a tree', () => {
     h.sim.dispose();
   });
 
+  it('forgets a tree somebody else has taken, so a post set on its stump is left standing', () => {
+    const h = createHeadlessVillage(5);
+    const { world, plan, sim } = h;
+    h.weather.force('clear');
+    // Every trunk in the forest goes, as the player's axe would take it, and an oak post is set on each stump.
+    const f = plan.forest;
+    const posts: [number, number, number][] = [];
+    for (let zz = f.z - f.radius; zz <= f.z + f.radius; zz++) {
+      for (let x = f.x - f.radius; x <= f.x + f.radius; x++) {
+        if (!IS_LOG[world.get(x, FEET, zz)]) continue;
+        for (let y = FEET; IS_LOG[world.get(x, y, zz)]; y++) world.set(x, y, zz, B.air);
+        for (let k = 0; k < 3; k++) {
+          world.set(x, FEET + k, zz, B.oak_log);
+          posts.push([x, FEET + k, zz]);
+        }
+      }
+    }
+    expect(posts.length).toBeGreaterThan(27);
+    h.step(TICKS_PER_DAY * 2);
+    for (const [x, y, zz] of posts) expect(world.get(x, y, zz), `post at ${x},${y},${zz}`).toBe(B.oak_log);
+    expect(sim.stats.treesFelled).toBe(0);
+    expect(sim.stats.saplingsPlanted).toBe(0);
+  });
+
   it('fells trees and leaves the logs of a build among them alone', () => {
     const h = createHeadlessVillage(5);
     const { world, plan, sim } = h;

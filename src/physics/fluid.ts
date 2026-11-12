@@ -57,6 +57,8 @@ export interface FluidOptions {
 /** Offsets of the four sideways neighbours inside a section array, whose index is (ly << 10) | (lz << 5) | lx. */
 const OFF = [1, 32, -1, -32];
 const WORDS = 1024;
+/** Full cells a search for room will pass through before the water it is placing is given up as lost. */
+const PUSH_REACH = 256;
 
 export class Fluid {
   /** Units that came in from outside: through `addWater`, or by anyone else writing water into the grid. */
@@ -89,6 +91,9 @@ export class Fluid {
   private searches = 0;
   /** Cells that are thin films waiting to dry, with the tick each is due; the wheel holds the same cells by due tick. */
   private readonly films = new Map<number, number>();
+  /** Scratch for `push`: the cells looked at, and the full ones still to be passed through. */
+  private readonly pushSeen = new Set<number>();
+  private readonly pushQueue: number[] = [];
   private readonly wheel: number[][];
   private readonly wheelMask: number;
   private readonly seed: number;
@@ -239,21 +244,52 @@ export class Fluid {
   }
 
   /**
-   * Find room for water that has lost its cell: in the cells beside it, where
-   * a puddle would be squeezed to, and then up the column through water that
-   * is already full, as a block sinking into a pool raises it.
+   * Find room for water that has lost its cell. It goes where water would go
+   * of itself: into the cell below, the cells beside (a puddle is squeezed
+   * sideways), the cell above; and where those are water that is already
+   * full, on through them, so that a block sunk in a pool raises the pool
+   * wherever the pool has room, round a ledge or under a roof as well as
+   * straight up. Only when the whole body within reach is full and shut in is
+   * anything lost. (Looking no farther than the four cells beside and the
+   * column above lost a block's worth of a pool that had open sky one cell
+   * over.)
    */
   private push(x: number, y: number, z: number, units: number): void {
     const w = this.world;
+    const { sx, sz } = w;
+    const layer = sx * sz;
+    const seen = this.pushSeen;
+    const queue = this.pushQueue;
+    seen.clear();
+    queue.length = 0;
+    const start = y * layer + z * sx + x;
+    seen.add(start);
+    queue.push(start);
     const r = (x * 3 + z * 5 + this.ticks) & 3;
-    for (let k = 0; k < 4 && units > 0; k++) {
-      const i = (r + k) & 3;
-      units -= this.put(x + (NX[i] as number), y, z + (NZ[i] as number), units);
-    }
-    for (let yy = y + 1; units > 0 && yy < Math.min(w.sy, y + 33); yy++) {
-      const a = w.get(x, yy, z);
-      if (LEVEL[a] === 0 && !OPEN[a]) break;
-      units -= this.put(x, yy, z, units);
+    for (let head = 0; head < queue.length && units > 0 && head < PUSH_REACH; head++) {
+      const k = queue[head] as number;
+      const cy = Math.floor(k / layer);
+      const cz = Math.floor((k - cy * layer) / sx);
+      const cx = k - cy * layer - cz * sx;
+      for (let d = 0; d < 6 && units > 0; d++) {
+        let nx = cx;
+        let ny = cy;
+        let nz = cz;
+        if (d === 0) ny--;
+        else if (d === 5) ny++;
+        else {
+          const i = (r + d - 1) & 3;
+          nx += NX[i] as number;
+          nz += NZ[i] as number;
+        }
+        if (!w.inBounds(nx, ny, nz)) continue;
+        const nk = ny * layer + nz * sx + nx;
+        if (seen.has(nk)) continue;
+        seen.add(nk);
+        units -= this.put(nx, ny, nz, units);
+        const s = w.get(nx, ny, nz);
+        if (!SOURCE[s] && LEVEL[s] === 16) queue.push(nk);
+      }
     }
     this.lost += units;
   }
