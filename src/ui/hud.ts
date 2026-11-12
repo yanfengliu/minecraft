@@ -71,6 +71,9 @@ export class Hud {
       if ((e.key !== 'Enter' && e.key !== ' ') || e.repeat) return;
       if (!(e.target as HTMLElement).closest('[data-act]')) return;
       e.preventDefault();
+      // And it goes no farther: the key was the panel's. If it closed the panel the game is listening again,
+      // and would have taken the same press of Space for a jump.
+      e.stopPropagation();
       this.click(e);
     });
     const measure = (): void => {

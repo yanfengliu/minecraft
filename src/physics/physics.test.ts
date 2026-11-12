@@ -376,7 +376,7 @@ describe('physics', () => {
     expect(physics.stats.fluidActive).toBe(0);
     expect(standing()).toBe(before);
     // The books agree: nothing was poured, made, swallowed, dried or lost on the way.
-    expect(physics.ledger.water).toEqual({ poured: 0, created: 0, absorbed: 0, evaporated: 0, lost: 0 });
+    expect(physics.ledger.water).toEqual({ poured: 0, created: 0, absorbed: 0, evaporated: 0, lost: 0, pending: 0 });
     expect(world.get(21, TOP, 21)).toBe(B.cobble);
     expect(IS_LOG[world.get(24, TOP, 24)]).toBe(1);
     physics.dispose();

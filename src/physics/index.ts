@@ -111,7 +111,7 @@ export class Physics {
   get ledger(): PhysicsLedger {
     const f = this.fluid;
     return {
-      water: { poured: f.poured, created: f.created, absorbed: f.absorbed, evaporated: f.evaporated, lost: f.lost },
+      water: { poured: f.poured, created: f.created, absorbed: f.absorbed, evaporated: f.evaporated, lost: f.lost, pending: f.pending },
       blocksGone: this.rigid.blocksGone,
       itemsGone: this.rigid.itemsGone,
     };

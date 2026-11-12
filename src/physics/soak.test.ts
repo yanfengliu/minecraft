@@ -109,7 +109,7 @@ async function soak(seed: number, seconds: number): Promise<{ signature: string;
     audits++;
     const now = census(world, physics);
     const { water, blocksGone, itemsGone } = physics.ledger;
-    const held = began.water + water.poured + water.created - water.absorbed - water.evaporated - water.lost;
+    const held = began.water + water.poured + water.created - water.absorbed - water.evaporated - water.lost - water.pending;
     if (now.water !== held) throw new Error(`water: ${now.water} sixteenths stand in the world and the books say ${held} (${JSON.stringify(water)})`);
     gone.fill(0);
     for (const [state, n] of blocksGone) gone[KIND[state] as number] = (gone[KIND[state] as number] as number) + n;

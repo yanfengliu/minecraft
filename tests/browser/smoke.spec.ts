@@ -161,8 +161,13 @@ test('a panel opens on its key and its buttons answer the keyboard', async ({ pa
     await step(0.05);
     expect(await open()).toBe('help');
     await page.locator('.panel button.close').focus();
+    const stood = await page.evaluate(() => window.__tidewick!.game!.player.y);
     await page.keyboard.down(key);
     expect(await open(), `${key} on the Close button`).toBeNull();
+    // The key was the panel's and stays the panel's: held down as the game takes over again, Space does
+    // not make the player jump.
+    await step(0.3);
+    expect(await page.evaluate(() => window.__tidewick!.game!.player.y), `the player after ${key} closed a panel`).toBeCloseTo(stood, 2);
     await page.keyboard.up(key);
     await step(0.05);
     // One press is one action: the release did not open it again or act on anything else.

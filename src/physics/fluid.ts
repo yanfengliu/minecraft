@@ -15,12 +15,14 @@
 // Volume is exact. Every unit that appears or disappears is counted in
 // `poured`, `created`, `absorbed`, `evaporated` or `lost`; nothing else changes
 // the total, whoever writes to the grid: water that anyone else's block takes
-// the place of is pushed aside, not deleted (see `edited`).
+// the place of is given back to the body it stood in, not deleted (see
+// `edited` and displace.ts), and is counted in `pending` until it is placed.
 
 import { hash3i } from '../core/rng';
 import { B, REPLACEABLE, SOLID, WATER_LEVEL, WATER_SOURCE } from '../world/blocks';
 import type { World } from '../world/world';
 import { CellCounts, CellSet } from './cellset';
+import { Displacement } from './displace';
 import { DX, DZ, FALL, PressureSearch, share, stays, waterFlow } from './leveling';
 import type { EmitEvent } from './types';
 
@@ -57,10 +59,6 @@ export interface FluidOptions {
 /** Offsets of the four sideways neighbours inside a section array, whose index is (ly << 10) | (lz << 5) | lx. */
 const OFF = [1, 32, -1, -32];
 const WORDS = 1024;
-/** Full cells a search for room will pass through before it settles for what it has found, or gives the water up as lost. */
-const PUSH_REACH = 4096;
-/** Full cells it goes on through after finding where the body could rise, in case there is room inside it nearer than that. */
-const PUSH_LINGER = 128;
 
 export class Fluid {
   /** Units that came in from outside: through `addWater`, or by anyone else writing water into the grid. */
@@ -71,8 +69,6 @@ export class Fluid {
   absorbed = 0;
   /** Units lost to evaporation. */
   evaporated = 0;
-  /** Units destroyed because something was put where they were and there was nowhere to push them. */
-  lost = 0;
   /** Ticks run so far. */
   ticks = 0;
   /** Cells examined by the last tick. */
@@ -93,10 +89,8 @@ export class Fluid {
   private searches = 0;
   /** Cells that are thin films waiting to dry, with the tick each is due; the wheel holds the same cells by due tick. */
   private readonly films = new Map<number, number>();
-  /** Scratch for `push`: the cells looked at, the full ones still to be passed through by height, and the open cells round the block. */
-  private readonly pushSeen = new Set<number>();
-  private readonly pushLevels: (number[] | undefined)[] = [];
-  private readonly pushOwn: number[] = [];
+  /** Water that has lost its cell to something put into it, and the search for where it goes. */
+  private readonly displaced: Displacement;
   private readonly wheel: number[][];
   private readonly wheelMask: number;
   private readonly seed: number;
@@ -118,6 +112,7 @@ export class Fluid {
     this.next = new CellSet(world);
     this.received = new CellCounts(world);
     this.pressure = new PressureSearch(world, Math.max(4, opts.searchCells ?? 192));
+    this.displaced = new Displacement(world, (x, y, z, units) => this.put(x, y, z, units));
     this.seed = opts.seed ?? 0;
     this.sourceRate = Math.max(1, Math.min(16, opts.sourceRate ?? 4));
     this.evaporateTicks = Math.max(1, opts.evaporateTicks ?? 90);
@@ -129,9 +124,24 @@ export class Fluid {
     this.wheel = Array.from({ length: size }, () => []);
   }
 
-  /** Cells the next tick will examine. Zero means every pool has settled. */
+  /** Cells the next tick will examine, and one more while displaced water is still looking for room. Zero means every pool has settled. */
   get activeCount(): number {
-    return this.next.size;
+    return this.next.size + (this.displaced.busy ? 1 : 0);
+  }
+
+  /** Units destroyed because something was put where they were and there was nowhere at all for them to go. */
+  get lost(): number {
+    return this.displaced.lost;
+  }
+
+  /** Units displaced by something put into their cell and not yet placed: neither in the world nor lost. */
+  get pending(): number {
+    return this.displaced.pending;
+  }
+
+  /** Full cells the searches for somewhere to put displaced water have passed through so far: the work they have done. */
+  get searched(): number {
+    return this.displaced.passed;
   }
 
   /** A block changed here: look at it and its neighbours on the next tick. */
@@ -153,18 +163,19 @@ export class Fluid {
   /**
    * Somebody other than the fluid wrote `state` over `old` in this cell. That
    * never destroys finite water: what a block (or anything else) took the
-   * place of is pushed into the cells beside it or up the column, and only
-   * what fits nowhere is counted in `lost`. Water the edit brought with it is
+   * place of goes where `Displacement` finds for it, and only what has nowhere
+   * at all to go is counted in `lost`. Water the edit brought with it is
    * counted in `poured`. Either way the cell and its neighbours are looked at
    * on the next tick.
    */
   edited(x: number, y: number, z: number, old: number, state: number): void {
     const had = SOURCE[old] ? 0 : (LEVEL[old] as number);
     const has = SOURCE[state] ? 0 : (LEVEL[state] as number);
+    this.displaced.changed(x, y, z);
     if (has > had) this.poured += has - had;
     else if (had > has) {
       if (SOURCE[state]) this.absorbed += had;
-      else this.push(x, y, z, had - has);
+      else this.displaced.displace(x, y, z, had - has, (x * 3 + z * 5 + this.ticks) & 3);
     }
     this.next.addAround(x, y, z);
     if (FALL[old] !== FALL[state]) this.wakeAbove(x, y, z);
@@ -221,6 +232,7 @@ export class Fluid {
     cur.clear();
     this.processed = processed;
     this.evaporateDue();
+    this.displaced.advance();
     this.busy = false;
   }
 
@@ -246,115 +258,12 @@ export class Fluid {
     return add;
   }
 
-  /**
-   * Find room for water that has lost its cell to something put into it. The
-   * water belongs to the body it stood in, so that is where it goes: first
-   * into any water with room beside the block, then, passing through water
-   * that is already full and always taking the highest of it next, into the
-   * first water with room that is met; and if the body has none, on top of
-   * it or out at its side, wherever the lowest open cell against it was
-   * found. Only for want of any body does the water go into the open round the
-   * block itself (a puddle squeezed aside), and only when all of that fails is
-   * anything lost.
-   *
-   * Three earlier versions each lost or misplaced water: beside and straight
-   * above only (a pool with sky one cell over lost a block's worth); breadth
-   * first for 256 cells (a block at the bottom of a deep pool never reached
-   * the top); and filling whatever open cell came first (water was lifted
-   * onto the block and ran off outside while the pool beside it had room).
-   */
-  private push(x: number, y: number, z: number, units: number): void {
-    const w = this.world;
-    const { sx, sz } = w;
-    const layer = sx * sz;
-    const seen = this.pushSeen;
-    const levels = this.pushLevels;
-    const own = this.pushOwn;
-    seen.clear();
-    own.length = 0;
-    seen.add(y * layer + z * sx + x);
-    const r = (x * 3 + z * 5 + this.ticks) & 3;
-    // Full cells still to be passed through, by height: the highest is taken next, so the search climbs
-    // to the surface of whatever body this is, however deep the block was set in it.
-    let highest = -1;
-    let lowest = w.sy;
-    let queued = 0;
-    // An open cell lying on or against the body: where it rises if there is no room within. The lowest found.
-    let spill = -1;
-    let spillY = w.sy;
-
-    const expand = (cx: number, cy: number, cz: number, first: boolean): void => {
-      for (let d = 0; d < 6 && units > 0; d++) {
-        let nx = cx;
-        let ny = cy;
-        let nz = cz;
-        if (d === 0) ny--;
-        else if (d === 5) ny++;
-        else {
-          const i = (r + d - 1) & 3;
-          nx += NX[i] as number;
-          nz += NZ[i] as number;
-        }
-        if (!w.inBounds(nx, ny, nz)) continue;
-        const nk = ny * layer + nz * sx + nx;
-        if (seen.has(nk)) continue;
-        seen.add(nk);
-        const s = w.get(nx, ny, nz);
-        const level = LEVEL[s] as number;
-        if (SOURCE[s] || (level > 0 && level < 16)) {
-          // Water with room in it, or a lake or river, which swallows whatever it is given.
-          units -= this.put(nx, ny, nz, units);
-          if (units <= 0) return;
-        } else if (level === 0) {
-          if (!OPEN[s]) continue;
-          // Open air. Round the block itself it is the last resort; on or beside the body it is where the body rises.
-          if (first) own.push(nk);
-          else if (ny < spillY) {
-            spillY = ny;
-            spill = nk;
-          }
-          continue;
-        }
-        // Full, now or already: to be passed through.
-        (levels[ny] ??= []).push(nk);
-        queued++;
-        if (ny > highest) highest = ny;
-        if (ny < lowest) lowest = ny;
-      }
-    };
-
-    expand(x, y, z, true);
-    let expanded = 0;
-    let sinceSpill = 0;
-    while (units > 0 && queued > 0 && expanded < PUSH_REACH && sinceSpill < PUSH_LINGER) {
-      while ((levels[highest] as number[] | undefined)?.length === 0 || levels[highest] === undefined) highest--;
-      const k = (levels[highest] as number[]).pop() as number;
-      queued--;
-      expanded++;
-      if (spill >= 0) sinceSpill++;
-      const cy = Math.floor(k / layer);
-      const cz = Math.floor((k - cy * layer) / sx);
-      expand(k - cy * layer - cz * sx, cy, cz, false);
-    }
-    for (let i = Math.max(lowest, 0); i < levels.length; i++) if (levels[i]) (levels[i] as number[]).length = 0;
-
-    // No room inside the body, as far as was looked: it rises where it can, and failing a body, the water
-    // goes into the open round the block itself (a puddle squeezed aside, or lifted onto what was put in it).
-    if (units > 0 && spill >= 0) own.unshift(spill);
-    for (let i = 0; i < own.length && units > 0; i++) {
-      const k = own[i] as number;
-      const cy = Math.floor(k / layer);
-      const cz = Math.floor((k - cy * layer) / sx);
-      units -= this.put(k - cy * layer - cz * sx, cy, cz, units);
-    }
-    this.lost += units;
-  }
-
   /** Write a finite level (0 is air). `old` is the state being replaced, so a plant in the way is reported. */
   private setLevel(x: number, y: number, z: number, level: number, old: number = AIR): void {
     if (old !== AIR && LEVEL[old] === 0) this.emit({ type: 'burst', x: x + 0.5, y: y + 0.5, z: z + 0.5, state: old });
     // A film that gains or loses water is no longer waiting to dry.
     if (old === WATER && this.films.size > 0) this.films.delete((y * this.world.sz + z) * this.world.sx + x);
+    this.displaced.changed(x, y, z);
     this.world.set(x, y, z, level <= 0 ? AIR : WATER + level - 1);
     this.next.addAround(x, y, z);
   }
@@ -483,6 +392,7 @@ export class Fluid {
         if (ns >= RIVER && ns < RIVER + 8) heal = ns;
       }
       this.absorbed += 16;
+      this.displaced.changed(x, y, z);
       w.set(x, y, z, heal);
       this.next.addAround(x, y, z);
       this.wakeAbove(x, y, z);

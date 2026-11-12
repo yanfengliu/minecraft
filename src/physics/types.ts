@@ -130,8 +130,10 @@ export interface PhysicsLedger {
     absorbed: number;
     /** Dried up as thin films. */
     evaporated: number;
-    /** Destroyed: something was put where it stood and there was nowhere to push it. */
+    /** Destroyed: something was put where it stood and there was nowhere at all for it to go. */
     lost: number;
+    /** Displaced by something put where it stood and still looking for room: not in the world, and not lost. */
+    pending: number;
   };
   /** Blocks of bodies that fell off the world, or were entombed with no way out: a count per block state. */
   blocksGone: ReadonlyMap<number, number>;
