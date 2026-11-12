@@ -72,6 +72,26 @@ describe('trading with the village', () => {
     expect(JSON.stringify(village.sim.ledger())).toBe(ledger);
   });
 
+  it('gives nothing for a lot not worth a coin, says so, and takes a handful of the same good', () => {
+    const { trade, inv, village } = market(0);
+    // The cheapest good the village will buy at all: one of it is worth less than a coin, a handful is not.
+    const cheap = ['stone', 'firewood', 'oak_log', 'wheat'].find((g) => village.sim.quoteSell(g, 1) === null && village.sim.quoteSell(g, 20) !== null);
+    expect(cheap, 'a good too cheap to sell singly').toBeDefined();
+    const id = item(cheap as string).id;
+    inv.add(id, 20);
+    const before = closed(village);
+    expect(trade.sell(cheap as string, 1)).toBe(false);
+    expect(trade.note).toMatch(/worth less than a coin/);
+    expect(inv.count(id)).toBe(20);
+    expect(inv.coins).toBe(0);
+    const offer = village.sim.quoteSell(cheap as string, 20) as number;
+    expect(offer).toBeGreaterThanOrEqual(1);
+    expect(trade.sell(cheap as string, 20)).toBe(true);
+    expect(inv.count(id)).toBe(0);
+    expect(inv.coins).toBe(offer);
+    expect(closed(village)).toBe(before);
+  });
+
   it('hands over what does not fit in the pack instead of losing it', () => {
     const { trade, inv, dropped } = market(500);
     const stone = item('stone').id;

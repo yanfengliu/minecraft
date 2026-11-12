@@ -100,8 +100,10 @@ export function wildlifePanel(game: GameHost): Panel {
 
 /** The trade window, opened by right-clicking a villager at a counter or stall. */
 export function tradePanel(game: GameHost, icons: Icons): Panel {
+  /** The sizes of lot the window deals in. */
+  const LOTS = [1, 5, 20];
   const buttons = (act: string, good: string, enabled: (n: number) => boolean): string =>
-    [1, 5, 20].map((n) => `<button data-act="${act}:${good}*${n}"${enabled(n) ? '' : ' disabled'}>${n}</button>`).join('');
+    LOTS.map((n) => `<button data-act="${act}:${good}*${n}"${enabled(n) ? '' : ' disabled'}>${n}</button>`).join('');
   return {
     title: 'Trade',
     render: () => {
@@ -110,17 +112,22 @@ export function tradePanel(game: GameHost, icons: Icons): Panel {
       if (!trade || !village) return '<p class="sub">There is nobody here to trade with.</p>';
       const who = village.inspect(trade.partner);
       const coins = game.inventory.coins;
-      const rows = trade.offers().filter((o) => o.buy !== null || (o.have > 0 && o.sell !== null)).map((o) => {
+      const rows = trade.offers().map((o) => {
+        // What a lot of each size would fetch. One of a cheap good is worth less than a coin and finds no
+        // buyer, though five of it do: the price shown is then for the smallest lot that sells.
+        const fetch = LOTS.map((n) => (o.have >= n ? village.quoteSell(o.good, n) : null));
+        const first = fetch.findIndex((q) => q !== null);
+        if (o.buy === null && first < 0) return '';
         const buy = o.buy === null ? '<td class="num"></td><td></td>'
           : `<td class="num">${o.buy}</td><td>${buttons('buy', o.good, (n) => { const q = village.quoteBuy(o.good, n); return q !== null && q <= coins; })}</td>`;
-        const sell = o.sell === null || o.have === 0 ? '<td class="num"></td><td></td>'
-          : `<td class="num">${o.sell}</td><td>${buttons('sell', o.good, (n) => o.have >= n && village.quoteSell(o.good, n) !== null)}</td>`;
+        const sell = first < 0 ? '<td class="num"></td><td></td>'
+          : `<td class="num">${first === 0 ? fetch[0] : `${fetch[first]} for ${LOTS[first]}`}</td><td>${buttons('sell', o.good, (n) => fetch[LOTS.indexOf(n)] != null)}</td>`;
         return `<tr><td>${icon(icons, o.item)}${esc(o.label)}</td><td class="num">${o.have || ''}</td>${buy}${sell}</tr>`;
       }).join('');
       const closed = trade.open ? '' : '<p class="sub"><b>The seller has left the counter.</b> Come back when someone is serving.</p>';
       // The outcome of the last click sits above the table, where it is seen without scrolling.
       return (
-        `<p class="sub">${who ? `${esc(who.title)}, ${esc(who.subtitle)}. ` : ''}You have ${coins} coins. Prices are for one; a larger lot costs more each, and sells for less.</p>` +
+        `<p class="sub">${who ? `${esc(who.title)}, ${esc(who.subtitle)}. ` : ''}You have ${coins} coins. Prices are in whole coins and shown for one: cheap goods come cheaper by the handful, and a lot not worth a coin finds no buyer.</p>` +
         closed +
         `<p class="sub note">${trade.note ? esc(trade.note) : '&nbsp;'}</p>` +
         `<table><tr><th>Good</th><th class="num">You have</th><th class="num">Buy for</th><th>Buy</th><th class="num">Sells for</th><th>Sell</th></tr>${rows}</table>`

@@ -79,10 +79,12 @@ export class Trade {
     if (!this.open) return this.fail('The seller has left the counter.');
     const def = item(good);
     if (this.inv.count(def.id) < qty) return this.fail(`You are not carrying ${qty}.`);
+    // No offer means one of two things: the lot is worth less than a coin, or it is more than anyone wants.
+    const refused = 'No offer for that: it is worth less than a coin, or more than anyone here wants.';
     const pay = this.village.quoteSell(good, qty);
-    if (pay === null) return this.fail('Nobody here will take that many.');
+    if (pay === null) return this.fail(refused);
     const deal = this.village.sell(good, qty);
-    if (!deal.ok) return this.fail('Nobody here will take that many.');
+    if (!deal.ok) return this.fail(refused);
     this.inv.remove(def.id, qty);
     this.inv.coins += deal.coins;
     this.inv.version++;
