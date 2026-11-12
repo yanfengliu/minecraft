@@ -31,6 +31,14 @@ function vertices(m: MeshOutput): Vertex[] {
   return out;
 }
 
+/** The mesh's quads, each as its four vertices. */
+function quads(m: MeshOutput): Vertex[][] {
+  const v = vertices(m);
+  const out: Vertex[][] = [];
+  for (let q = 0; q < v.length; q += 4) out.push(v.slice(q, q + 4));
+  return out;
+}
+
 describe('mesher', () => {
   it('emits six faces for a lone cube and culls the face two cubes share', () => {
     expect(meshOf((w) => w.setRaw(5, 5, 5, B.stone)).opaque).toBe(6);
@@ -75,6 +83,47 @@ describe('mesher', () => {
     const near = vertices(m).filter((v) => v.normal === 2 && v.y === 5 && Math.abs(v.x - 6.5) < 1 && Math.abs(v.z - 6.5) < 1);
     expect(Math.max(...near.map((v) => v.block))).toBeGreaterThan(20);
     expect(m.cutout).toBeGreaterThan(0);
+  });
+
+  it('lights a wall beside a path, a slab or a stair as it would beside open ground', () => {
+    // A path, slab or stair is light-tight: its cell holds no light. A wall face that looks into such
+    // a cell, or has one at its foot, once averaged that darkness in and came out half black.
+    const eastFace = (build: (w: World) => void): Vertex[] => {
+      const m = meshOf((w) => {
+        for (let z = 0; z < 12; z++) for (let x = 0; x < 12; x++) w.setRaw(x, 4, z, B.stone);
+        w.setRaw(6, 5, 6, B.stone);
+        build(w);
+      });
+      // The wall block's east face: the one quad on that plane above the ground.
+      const faces = quads(m).filter((q) => q.every((v) => v.normal === 0 && v.x === 7 && v.y >= 5));
+      expect(faces.length).toBe(1);
+      return faces[0]!;
+    };
+    expect(eastFace(() => undefined).map((v) => v.sky)).toEqual([30, 30, 30, 30]);
+    const beside: Record<string, (w: World) => void> = {
+      'a path at its foot': (w) => { for (let z = 5; z <= 7; z++) w.setRaw(7, 4, z, B.path); },
+      'a slab against it': (w) => w.setRaw(7, 5, 6, B.oak_slab),
+      'a row of slabs along it': (w) => { for (let z = 5; z <= 7; z++) w.setRaw(7, 5, z, B.oak_slab); },
+      // Facing east: the low half of the stair is the one against the wall, so the wall still shows above it.
+      'a stair against it': (w) => w.setRaw(7, 5, 6, B.cobble_stairs + 1),
+    };
+    for (const [what, build] of Object.entries(beside)) {
+      expect(eastFace(build).map((v) => v.sky), `a wall with ${what}`).toEqual([30, 30, 30, 30]);
+    }
+    // Torch light is carried the same way: a lamp by a wall lights it no less for a path running past.
+    const torchlit = (build: (w: World) => void): number[] => eastFace((w) => { w.setRaw(8, 5, 6, B.torch); build(w); }).map((v) => v.block);
+    expect(torchlit(beside['a path at its foot']!)).toEqual(torchlit(() => undefined));
+  });
+
+  it('lights water under a raised slab from the air beside the slab', () => {
+    const m = meshOf((w) => {
+      for (let z = 3; z <= 7; z++) for (let x = 3; x <= 7; x++) { w.setRaw(x, 3, z, B.stone); w.setRaw(x, 4, z, B.water_source); }
+      // The upper half of the cell: half a block of air between the slab and the water, which is in plain view.
+      w.setRaw(5, 5, 5, B.oak_slab + 1);
+    });
+    const under = quads(m).filter((q) => q.every((p) => p.water && p.normal === 2 && p.x >= 5 && p.x <= 6 && p.z >= 5 && p.z <= 6));
+    expect(under.length).toBe(1);
+    expect(under[0]!.map((p) => p.sky)).toEqual([30, 30, 30, 30]);
   });
 
   it('sorts geometry into opaque, cutout and translucent runs', () => {

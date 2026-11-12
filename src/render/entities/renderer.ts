@@ -27,6 +27,8 @@ export class EntityRenderer {
   private readonly instanceBuffer: WebGLBuffer;
   private data = new Float32Array(STRIDE * 4096);
   private capacity = 4096;
+  /** Size of the instance buffer on the GPU, in bytes; `data` may have outgrown it since the last upload. */
+  private gpuBytes = 0;
   count = 0;
   private readonly models = new Map<string, Model>();
   private readonly smooth = new Map<number, Smoothed>();
@@ -64,6 +66,7 @@ export class EntityRenderer {
     gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
     gl.bindBuffer(gl.ARRAY_BUFFER, inst);
     gl.bufferData(gl.ARRAY_BUFFER, this.data.byteLength, gl.DYNAMIC_DRAW);
+    this.gpuBytes = this.data.byteLength;
     const bytes = STRIDE * 4;
     const attr = (loc: number, size: number, offset: number): void => {
       gl.enableVertexAttribArray(loc);
@@ -161,7 +164,7 @@ export class EntityRenderer {
     const pose = this.pose;
     let legs = 0;
     for (const p of model.parts) if (p.channel.startsWith('leg')) legs = Math.max(legs, p.h * PX);
-    computePose(v.kind, v.anim, v.animTime, v.id, legs * v.scale, pose);
+    computePose(v.kind, v.anim, v.animTime, v.id, legs, pose);
 
     // Root: place, turn to heading, then the pose's whole-body tip and roll, in model pixels.
     const yaw = s.yaw + pose.turn;
@@ -169,14 +172,17 @@ export class EntityRenderer {
     const cp = Math.cos(pose.pitch), sp = Math.sin(pose.pitch);
     const cr = Math.cos(pose.roll), sr = Math.sin(pose.roll);
     const k = v.scale * PX;
+    // The pose raises and slides the body in the model's own metres: they shrink with the creature, as its boxes do.
+    const lift = pose.lift * v.scale;
+    const shift = pose.shift * v.scale;
     // R = Ry * Rx * Rz
     const m00 = cy * cr + sy * sp * sr, m01 = -cy * sr + sy * sp * cr, m02 = sy * cp;
     const m10 = cp * sr, m11 = cp * cr, m12 = -sp;
     const m20 = -sy * cr + cy * sp * sr, m21 = sy * sr + cy * sp * cr, m22 = cy * cp;
     const root = this.root;
-    root[0] = m00 * k; root[1] = m01 * k; root[2] = m02 * k; root[3] = s.x + sy * pose.shift;
-    root[4] = m10 * k; root[5] = m11 * k; root[6] = m12 * k; root[7] = s.y + pose.lift;
-    root[8] = m20 * k; root[9] = m21 * k; root[10] = m22 * k; root[11] = s.z + cy * pose.shift;
+    root[0] = m00 * k; root[1] = m01 * k; root[2] = m02 * k; root[3] = s.x + sy * shift;
+    root[4] = m10 * k; root[5] = m11 * k; root[6] = m12 * k; root[7] = s.y + lift;
+    root[8] = m20 * k; root[9] = m21 * k; root[10] = m22 * k; root[11] = s.z + cy * shift;
 
     const light = world.getLight(Math.floor(s.x), Math.floor(s.y + 0.8), Math.floor(s.z));
     const sky = (light >> 4) / 15;
@@ -225,9 +231,15 @@ export class EntityRenderer {
     if (this.frame % 240 === 0) {
       for (const [id, s] of this.smooth) if (s.seen < this.frame - 2) this.smooth.delete(id);
     }
+    // With no boxes there is nothing to send. Asking for it anyway would not send nothing: a length of
+    // 0 means "to the end of the array" to WebGL, and the whole array would go up every frame.
+    if (this.count === 0) return;
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
-    if (this.data.byteLength > gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE)) gl.bufferData(gl.ARRAY_BUFFER, this.data.byteLength, gl.DYNAMIC_DRAW);
+    if (this.data.byteLength > this.gpuBytes) {
+      gl.bufferData(gl.ARRAY_BUFFER, this.data.byteLength, gl.DYNAMIC_DRAW);
+      this.gpuBytes = this.data.byteLength;
+    }
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.data, 0, this.count * STRIDE);
   }
 

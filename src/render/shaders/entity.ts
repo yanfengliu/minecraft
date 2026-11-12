@@ -4,7 +4,7 @@
 // (falling blocks, rubble, dropped block items), so a block that leaves the
 // grid keeps the face it had in it.
 
-import { COMMON, FRAME_BLOCK, TILE_SAMPLE } from './common';
+import { COMMON, FACE_CODE, FRAME_BLOCK, TILE_SAMPLE } from './common';
 
 export const ENTITY_VS = /* glsl */ `
 ${FRAME_BLOCK}
@@ -58,6 +58,7 @@ void main() {}
 export const ENTITY_FS = /* glsl */ `
 ${FRAME_BLOCK}
 ${COMMON}
+${FACE_CODE}
 ${TILE_SAMPLE}
 uniform sampler2DArray uTiles;
 in vec3 vNormal;
@@ -85,6 +86,7 @@ void main() {
   oAlbedo = vec4(albedo, vColor.a);
   // Alpha 1 marks a creature or a loose body: the lighting pass keeps settled snow and puddles off it.
   oNormal = vec4(encodeNormal(normalize(vNormal)), 0.82, 1.0);
-  oLight = vec4(vLight, 1.0, 0.0);
+  // A box has no painted relief: the normal just stored is the face's own.
+  oLight = vec4(vLight, 1.0, packFace(FACE_OWN, false));
 }
 `;

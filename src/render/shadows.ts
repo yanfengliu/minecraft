@@ -1,8 +1,10 @@
 // Cascaded shadow maps for the key light. Four slices of the view frustum each
 // get an orthographic depth map fitted to a bounding sphere of the slice (so
 // the map's scale never changes as the camera turns) and snapped to its own
-// texel grid (so shadows do not shimmer as the camera moves). Far cascades are
-// refreshed less often than near ones.
+// texel grid (so shadows do not shimmer as the camera moves). The spheres are
+// sized for the widest field of view the camera uses, not the one it has at
+// the moment (so the scale does not change either while the view widens for a
+// sprint). Far cascades are refreshed less often than near ones.
 
 import { type GL, type Target, createTarget, createTexture } from './gl';
 import { type Mat4, frustumPlanes, lookDir, mat4, multiply, ortho } from './mat4';
@@ -35,9 +37,13 @@ export class ShadowCascades {
   private readonly proj: Mat4 = mat4();
   private readonly vp: Mat4 = mat4();
   private frame = 0;
+  /** Tangent of half the vertical field of view the cascades are sized for. */
+  private fitTan: number;
 
-  constructor(gl: GL, res: number, far: number) {
+  /** `widestFov` is the widest vertical field of view the camera is expected to use, in radians. */
+  constructor(gl: GL, res: number, far: number, widestFov: number) {
     this.res = res;
+    this.fitTan = Math.tan(widestFov / 2);
     this.texture = createTexture(gl, {
       target: gl.TEXTURE_2D_ARRAY, width: res, height: res, depth: CASCADES,
       internalFormat: gl.DEPTH_COMPONENT24, format: gl.DEPTH_COMPONENT, type: gl.UNSIGNED_INT,
@@ -68,6 +74,15 @@ export class ShadowCascades {
   update(cam: CameraFrame, lx: number, ly: number, lz: number, force = false): number {
     let mask = 0;
     this.frame++;
+    // The slices are those of the widest view the camera uses, which contain the slices of any
+    // narrower one. Fitted to the view of the moment, every radius, and with it the size of a texel,
+    // would change frame by frame while the field of view eases out for a sprint and back: the maps
+    // would be drawn on a new grid each time and every shadow edge would crawl. A camera wider than
+    // was promised is fitted all the same, and is the widest from then on.
+    if (cam.tanHalfFovY > this.fitTan) this.fitTan = cam.tanHalfFovY;
+    const tanY = this.fitTan;
+    const tanX = tanY * cam.aspect;
+    const k = 1 + tanX * tanX + tanY * tanY;
     for (let i = 0; i < CASCADES; i++) {
       const every = i < 2 ? 1 : i === 2 ? 2 : 4;
       if (!force && this.frame % every !== (i === 3 ? 1 : 0) % every) continue;
@@ -76,9 +91,6 @@ export class ShadowCascades {
       const f = this.splits[i] as number;
 
       // Bounding sphere of the slice: centred on the view axis.
-      const tanY = cam.tanHalfFovY;
-      const tanX = tanY * cam.aspect;
-      const k = 1 + tanX * tanX + tanY * tanY;
       // Centre distance that equalises the distance to the near and far corners, clamped inside the slice.
       const cd = Math.min(f, ((n + f) * k) / 2);
       const rFar = Math.hypot(f * tanX, f * tanY, f - cd);

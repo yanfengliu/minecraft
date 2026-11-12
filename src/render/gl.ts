@@ -221,9 +221,19 @@ export function drawFullscreen(gl: GL): void {
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
-/** Extensions the renderer cannot do without; throws a readable error naming what is missing. */
+/**
+ * Extensions the renderer cannot do without; throws a readable error naming what is missing.
+ *
+ * There is one: drawing into the half-float and packed-float targets (RGBA16F, RG16F,
+ * R11F_G11F_B10F) that the lit scene, the clouds, the occlusion and the bloom live in. Sampling
+ * those with linear filtering is core WebGL2 and needs nothing. OES_texture_float_linear is about
+ * 32-bit float textures, of which the renderer has none: requiring it turned away GPUs that lack it
+ * (many phones) for no reason.
+ */
+export const REQUIRED_EXTENSIONS: readonly string[] = ['EXT_color_buffer_float'];
+
 export function requireExtensions(gl: GL): void {
-  for (const name of ['EXT_color_buffer_float', 'OES_texture_float_linear']) {
+  for (const name of REQUIRED_EXTENSIONS) {
     if (!gl.getExtension(name)) throw new Error(`this GPU or browser lacks the WebGL2 extension ${name}`);
   }
 }

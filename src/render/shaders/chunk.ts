@@ -3,7 +3,7 @@
 //
 // Defines: CUTOUT (alpha-tested foliage and fittings), SHADOW (depth only).
 
-import { COMMON, FRAME_BLOCK, TILE_SAMPLE, WIND } from './common';
+import { COMMON, FACE_CODE, FRAME_BLOCK, TILE_SAMPLE, WIND } from './common';
 
 export const CHUNK_VS = /* glsl */ `
 ${FRAME_BLOCK}
@@ -75,6 +75,7 @@ void main() {
 export const CHUNK_GBUFFER_FS = /* glsl */ `
 ${FRAME_BLOCK}
 ${COMMON}
+${FACE_CODE}
 ${TILE_SAMPLE}
 uniform sampler2DArray uTiles;
 uniform sampler2DArray uTilesMat;
@@ -87,10 +88,9 @@ in vec3 vLight;
 flat in uint vBits;
 
 layout(location = 0) out vec4 oAlbedo;   // rgb albedo, a emission
-layout(location = 1) out vec4 oNormal;   // rg octahedral normal, b roughness, a material class
-layout(location = 2) out vec4 oLight;    // r sky, g block, b ambient occlusion, a foliage flag
+layout(location = 1) out vec4 oNormal;   // rg octahedral normal (with the tile's relief), b roughness, a material class
+layout(location = 2) out vec4 oLight;    // r sky, g block, b ambient occlusion, a which face this is and whether it is foliage (FACE_CODE)
 
-const vec3 NORMALS[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
 // Tangent (along +u) and bitangent (along +v, which runs down the tile) for each face.
 const vec3 TANGENTS[6] = vec3[6](vec3(0, 0, -1), vec3(0, 0, 1), vec3(1, 0, 0), vec3(1, 0, 0), vec3(1, 0, 0), vec3(-1, 0, 0));
 const vec3 BITANGENTS[6] = vec3[6](vec3(0, -1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1), vec3(0, -1, 0), vec3(0, -1, 0));
@@ -100,7 +100,8 @@ void main() {
   uint tint = (vBits >> 3) & 3u;
   bool uvMode = (vBits & 32u) != 0u;
   bool uvRot = (vBits & 64u) != 0u;
-  vec3 n = NORMALS[min(ni, 5u)];
+  uint face = min(ni, 5u);
+  vec3 n = FACE_NORMALS[face];
 
   vec2 uv = vUV;
   vec2 dx = dFdx(uv);
@@ -127,8 +128,8 @@ void main() {
   vec4 mat = tileSampleGrad(uTilesMat, uv, vLayer, dx, dy);
 
   if (!uvMode) {
-    vec3 t = TANGENTS[min(ni, 5u)];
-    vec3 b = BITANGENTS[min(ni, 5u)];
+    vec3 t = TANGENTS[face];
+    vec3 b = BITANGENTS[face];
     if (uvRot) { vec3 t0 = t; t = b; b = -t0; }
     vec2 d = mat.rg * 2.0 - 1.0;
     // The relief turns with the tile.
@@ -140,8 +141,11 @@ void main() {
     n = normalize(n + (t * d.x + b * d.y) * keep);
   }
 #ifdef CUTOUT
-  if (!gl_FrontFacing && !uvMode) n = -n;
+  // Seen from behind (the inside of a canopy), a face looks the other way; in the mesher's order that is the next index of the pair.
+  if (!gl_FrontFacing && !uvMode) { n = -n; face ^= 1u; }
 #endif
+  // A plant's crossed cards are stored looking up, to be lit as the ground they grow from: that stored normal is the one to go by.
+  if (uvMode) face = FACE_OWN;
 
   // Seasonal and regional tint lands only on the green parts of a tile, so soil and bark keep their colour.
   if (tint != 0u) {
@@ -156,9 +160,9 @@ void main() {
   oAlbedo = vec4(albedo.rgb, mat.a);
   oNormal = vec4(encodeNormal(n), mat.b, 0.0);
 #ifdef CUTOUT
-  oLight = vec4(vLight, 1.0);
+  oLight = vec4(vLight, packFace(face, true));
 #else
-  oLight = vec4(vLight, 0.0);
+  oLight = vec4(vLight, packFace(face, false));
 #endif
 }
 `;

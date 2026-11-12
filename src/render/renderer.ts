@@ -45,6 +45,12 @@ export interface RenderSettings {
   viewDistance: number;
   shadowDistance: number;
   shadowResolution: number;
+  /**
+   * The widest vertical field of view the camera will use, in radians. The shadow cascades are sized
+   * for it, so that a field of view which changes in play (it widens for a sprint) does not rescale
+   * them frame by frame. Keep it at or above the widest `Camera.fov` the game sets.
+   */
+  widestFov: number;
   ssao: boolean;
   /** Light shafts through the air. */
   shafts: boolean;
@@ -57,6 +63,8 @@ export const DEFAULT_SETTINGS: RenderSettings = {
   viewDistance: 640,
   shadowDistance: 220,
   shadowResolution: 2048,
+  // 72 degrees at rest and 6 more at a full sprint: what game.ts gives the camera.
+  widestFov: (78 * Math.PI) / 180,
   ssao: true,
   shafts: true,
   bloom: true,
@@ -149,6 +157,15 @@ export class Renderer {
   private heightsAge = 0;
   /** The block to outline (world-space box) and how far along breaking it is, or null. */
   selection: { box: number[]; progress: number } | null = null;
+  /**
+   * True once the browser has taken the WebGL context away: the GPU was reset, its driver replaced,
+   * or too many pages wanted a context. Every texture, buffer and program went with it. From then on
+   * nothing is drawn and no mesh is taken in. Building it all again in place is not implemented, so
+   * the game can only say what happened and ask for a reload.
+   */
+  contextLost = false;
+  /** Called once, when the context is lost. */
+  onContextLost: (() => void) | null = null;
 
   private readonly targets: FrameTargets;
   private readonly drift = new Drift();
@@ -172,9 +189,15 @@ export class Renderer {
     this.canvas = canvas;
     this.world = world;
     this.settings = { ...settings };
+    // The event is not cancelled: cancelling asks the browser to hand the context back, empty, and nothing here could refill it.
+    canvas.addEventListener('webglcontextlost', () => {
+      if (this.contextLost) return;
+      this.contextLost = true;
+      this.onContextLost?.();
+    });
     this.frame = new FrameUniforms(gl);
     this.sections = new SectionStore(gl, world);
-    this.shadows = new ShadowCascades(gl, this.settings.shadowResolution, this.settings.shadowDistance);
+    this.shadows = new ShadowCascades(gl, this.settings.shadowResolution, this.settings.shadowDistance, this.settings.widestFov);
 
     const set = buildTileSet();
     this.tileSet = set;
@@ -230,6 +253,8 @@ export class Renderer {
   }
 
   setMesh(section: number, mesh: MeshOutput | null): void {
+    // With the context gone there is nowhere to put a mesh, and asking for buffers would throw.
+    if (this.contextLost) return;
     this.sections.set(section, mesh);
   }
 
@@ -263,6 +288,7 @@ export class Renderer {
   }
 
   render(cam: Camera, env: Environment, info: FrameInfo): void {
+    if (this.contextLost) return;
     const gl = this.gl;
     this.resize();
     const { gbuffer, hdr, ao, width: w, height: h } = this.targets;
@@ -484,6 +510,7 @@ export class Renderer {
       prog.tex('uSkyLut', 6, gl.TEXTURE_2D, this.skyLut.colors[0] as WebGLTexture);
       prog.tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
       prog.tex('uCloudNoise', 8, gl.TEXTURE_3D, this.cloudNoise);
+      prog.tex('uHeightTex', 9, gl.TEXTURE_2D, this.heightTex);
       gl.uniformMatrix4fv(prog.loc('uShadowMat'), false, this.shadows.matrices);
       prog.f4v('uShadowSplit', this.shadows.splits).f4v('uShadowTexel', this.shadows.texel).f('uShadowRes', this.shadows.res);
       if (prog === this.pOcean) {
@@ -534,9 +561,13 @@ export class Renderer {
     // --- light shafts -------------------------------------------------------
     if (this.settings.shafts && !info.underwater) {
       const volume = this.targets.volume;
+      // The shafts end at what the eye sees, and that includes water: the forward target's depth has
+      // it, the G-buffer's does not. Marched to the G-buffer's depth, a ray went on through the water
+      // to the bed, and the air over deep water glowed with mist that was not there.
+      const seen = forward.depth;
       bindTarget(gl, volume);
       const pv = this.pVolume.use();
-      pv.tex('uDepth', 0, gl.TEXTURE_2D, gbuffer.depth).tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
+      pv.tex('uDepth', 0, gl.TEXTURE_2D, seen).tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
       pv.tex('uCloudNoise', 8, gl.TEXTURE_3D, this.cloudNoise);
       gl.uniformMatrix4fv(pv.loc('uShadowMat'), false, this.shadows.matrices);
       pv.f4v('uShadowSplit', this.shadows.splits).f4v('uShadowTexel', this.shadows.texel).f('uShadowRes', this.shadows.res);
@@ -544,7 +575,7 @@ export class Renderer {
       bindTarget(gl, hdr);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE);
-      this.pVolumeAdd.use().tex('uVolume', 0, gl.TEXTURE_2D, volume.colors[0] as WebGLTexture).tex('uDepth', 1, gl.TEXTURE_2D, gbuffer.depth)
+      this.pVolumeAdd.use().tex('uVolume', 0, gl.TEXTURE_2D, volume.colors[0] as WebGLTexture).tex('uDepth', 1, gl.TEXTURE_2D, seen)
         .f2('uTexel', 1 / volume.width, 1 / volume.height);
       drawFullscreen(gl);
       gl.disable(gl.BLEND);
