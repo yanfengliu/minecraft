@@ -5,7 +5,7 @@
 // from src/render, src/ui or the DOM.
 
 import type { Rng } from '../core/rng';
-import { B, IS_LEAVES, IS_LOG } from '../world/blocks';
+import { B, IS_LEAVES, IS_LOG, SOLID } from '../world/blocks';
 import type { World } from '../world/world';
 import type { Clock } from './clock';
 import type { WeatherView } from './weather';
@@ -132,34 +132,117 @@ export interface SimContext {
 
 /** Default actions for headless runs: trees vanish when felled, effects are dropped. */
 export function createBasicActions(world: World): WorldActions {
+  /** The most logs a tree's limbs come to. A larger piece of hanging wood is something built in the tree, and is left. */
+  const MAX_LIMB_LOGS = 12;
+  /** A leaf farther than this from a tree's wood, counting steps through foliage, is not the tree's. */
+  const LEAF_REACH = 6;
+  const { sx, sz } = world;
+  const keyOf = (x: number, y: number, z: number): number => (y * sz + z) * sx + x;
+  const xOf = (key: number): number => key % sx;
+  const yOf = (key: number): number => Math.floor(key / (sx * sz));
+  const zOf = (key: number): number => Math.floor(key / sx) % sz;
+  /** Call `visit` for the 26 cells round the cell with this key. */
+  const around = (key: number, visit: (x: number, y: number, z: number) => void): void => {
+    const x = xOf(key);
+    const y = yOf(key);
+    const z = zOf(key);
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) if (dx !== 0 || dy !== 0 || dz !== 0) visit(x + dx, y + dy, z + dz);
+      }
+    }
+  };
+  /** True for what wood can stand on: the ground, or anything built, but neither more wood nor foliage. */
+  const holdsUp = (state: number): boolean => SOLID[state] === 1 && !IS_LOG[state] && !IS_LEAVES[state];
+
   return {
     fellTree(x, y, z) {
-      if (!IS_LOG[world.get(x, y, z)]) return 0;
-      // Flood through the connected trunk and canopy. Bounded so a forest of touching crowns cannot all fall at once.
-      const seen = new Set<string>();
-      const stack: [number, number, number][] = [[x, y, z]];
-      let logs = 0;
-      while (stack.length > 0 && seen.size < 600) {
-        const [cx, cy, cz] = stack.pop() as [number, number, number];
-        const key = `${cx},${cy},${cz}`;
-        if (seen.has(key)) continue;
-        const s = world.get(cx, cy, cz);
-        const log = IS_LOG[s] === 1;
-        if (!log && !IS_LEAVES[s]) continue;
-        // Leaves only count while close to the trunk column being felled.
-        if (!log && Math.abs(cx - x) + Math.abs(cz - z) > 4) continue;
-        seen.add(key);
-        if (log) logs++;
-        world.set(cx, cy, cz, B.air);
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dz = -1; dz <= 1; dz++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              if (dx || dy || dz) stack.push([cx + dx, cy + dy, cz + dz]);
-            }
+      // A tree is one trunk: upright logs of one kind standing on the ground. Its limbs and its foliage go with
+      // it and nothing else does, so the tree next to it is left whole however their crowns mingle, and no
+      // leaf is left hanging on nothing.
+      const wood = world.get(x, y, z);
+      if (wood !== B.oak_log && wood !== B.birch_log && wood !== B.pine_log) return 0;
+      let base = y;
+      while (world.get(x, base - 1, z) === wood) base--;
+      if (!holdsUp(world.get(x, base - 1, z))) return 0;
+      const own = new Set<number>();
+      for (let ty = base; world.get(x, ty, z) === wood; ty++) own.add(keyOf(x, ty, z));
+
+      // Limbs: the wood joined to the trunk that nothing else holds up. Following the logs out from the trunk
+      // gives one group for each thing that touches it. A group with a log resting on the ground stands
+      // without this trunk (the next tree, a post of somebody's wall) and is left alone; so is one too large
+      // to be a limb, which is not followed to its end.
+      const groupOf = new Map<number, number>();
+      const limbs: number[] = [];
+      for (const trunk of [...own]) {
+        around(trunk, (ax, ay, az) => {
+          const first = keyOf(ax, ay, az);
+          if (!IS_LOG[world.get(ax, ay, az)] || own.has(first) || groupOf.has(first)) return;
+          const id = groupOf.size;
+          const group = [first];
+          groupOf.set(first, id);
+          let stays = false;
+          for (let i = 0; i < group.length && group.length <= MAX_LIMB_LOGS; i++) {
+            const key = group[i] as number;
+            if (holdsUp(world.get(xOf(key), yOf(key) - 1, zOf(key)))) stays = true;
+            around(key, (nx, ny, nz) => {
+              const k = keyOf(nx, ny, nz);
+              if (!IS_LOG[world.get(nx, ny, nz)] || own.has(k)) return;
+              const other = groupOf.get(k);
+              if (other === undefined) {
+                groupOf.set(k, id);
+                group.push(k);
+              } else if (other !== id) {
+                // Joined to a group that was too large to follow: part of the same large thing.
+                stays = true;
+              }
+            });
           }
-        }
+          if (!stays && group.length <= MAX_LIMB_LOGS) for (const key of group) limbs.push(key);
+        });
       }
-      return logs;
+      for (const key of limbs) own.add(key);
+
+      // Foliage: each leaf within reach belongs to the wood nearest it, and one as near to wood that is left
+      // standing stays with that. What stays is therefore always joined, leaf to leaf, to a tree.
+      const dist = new Map<number, number>();
+      const rivals = new Set<number>();
+      let wave = [...own];
+      for (let d = 1; wave.length > 0; d++) {
+        const next: number[] = [];
+        for (const key of wave) {
+          around(key, (nx, ny, nz) => {
+            const s = world.get(nx, ny, nz);
+            const k = keyOf(nx, ny, nz);
+            if (IS_LOG[s]) {
+              if (!own.has(k)) rivals.add(k);
+            } else if (IS_LEAVES[s] && d <= LEAF_REACH && !dist.has(k)) {
+              dist.set(k, d);
+              next.push(k);
+            }
+          });
+        }
+        wave = next;
+      }
+      const theirs = new Map<number, number>();
+      wave = [...rivals];
+      for (let d = 1; d <= LEAF_REACH && wave.length > 0; d++) {
+        const next: number[] = [];
+        for (const key of wave) {
+          around(key, (nx, ny, nz) => {
+            // Outside the world a key would stand for some other cell; no leaf is there.
+            const k = keyOf(nx, ny, nz);
+            if (!world.inBounds(nx, ny, nz) || !dist.has(k) || theirs.has(k)) return;
+            theirs.set(k, d);
+            next.push(k);
+          });
+        }
+        wave = next;
+      }
+
+      for (const [key, d] of dist) if (d < (theirs.get(key) ?? Infinity)) world.set(xOf(key), yOf(key), zOf(key), B.air);
+      for (const key of own) world.set(xOf(key), yOf(key), zOf(key), B.air);
+      return own.size;
     },
     effect() {},
   };

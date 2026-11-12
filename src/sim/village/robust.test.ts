@@ -13,11 +13,33 @@ import { Weather } from '../weather';
 import { Economy } from './economy';
 import { FEET, GROUND, placeBuilding } from './fixture-build';
 import { G } from './goods';
-import { type Headless, TICKS_PER_DAY, createHeadlessVillage } from './headless';
+import { type Headless, TICKS_PER_DAY, countCoin, createHeadlessVillage } from './headless';
 import { VillageSim } from './index';
-import { PHASE_WALK } from './model';
+import { PHASE_ACT, PHASE_WALK, type Resident } from './model';
 
 const HOUR = TICKS_PER_DAY / 24;
+
+/**
+ * Step the village, counting the times anybody is found more than two blocks
+ * from where they were a tick before. Nobody walks a fiftieth as fast, and
+ * sitting down, lying down and getting up move a body less than that, so each
+ * is somebody put somewhere they did not walk to.
+ */
+function stepCountingJumps(h: Headless, ticks: number): number {
+  const residents = h.sim.core.residents;
+  const was = residents.map((r) => [r.view.x, r.view.z] as [number, number]);
+  let jumps = 0;
+  for (let i = 0; i < ticks; i++) {
+    h.step(1);
+    residents.forEach((r, k) => {
+      const p = was[k] as [number, number];
+      if (Math.hypot(r.view.x - p[0], r.view.z - p[1]) > 2) jumps++;
+      p[0] = r.view.x;
+      p[1] = r.view.z;
+    });
+  }
+  return jumps;
+}
 
 describe('village when the world is edited under it', () => {
   it('walks round a wall that appears in the road ahead', () => {
@@ -66,6 +88,10 @@ describe('village when the world is edited under it', () => {
     h.runTo(0, 12);
     const mill = sim.core.businesses.find((b) => b.site.b.kind === 'mill')!;
     const stand = mill.site.b.work[0]!.stand;
+    // Dropped while the spot is empty. (On top of somebody it is another matter: see the next test.)
+    const taken = (): boolean => sim.core.residents.some((r) => Math.floor(r.view.x) === stand.x && Math.floor(r.view.z) === stand.z);
+    for (let i = 0; i < HOUR * 3 && taken(); i++) h.step(1);
+    expect(taken()).toBe(false);
     world.set(stand.x, stand.y, stand.z, B.crate);
     let milled = 0;
     for (let hour = 0; hour < 30; hour++) {
@@ -78,9 +104,62 @@ describe('village when the world is edited under it', () => {
     expect(sim.stats.teleports).toBe(0);
   });
 
+  it('counts it when someone shut in a block has to be lifted out', () => {
+    const h = createHeadlessVillage(3);
+    const { sim, world } = h;
+    h.runTo(0, 9);
+    const mill = sim.core.businesses.find((b) => b.site.b.kind === 'mill')!;
+    const stand = mill.site.b.work[0]!.stand;
+    // The crate lands where a miller is standing at the stone.
+    const there = (): Resident | undefined => mill.workers.find((r) => r.phase === PHASE_ACT && Math.floor(r.view.x) === stand.x && Math.floor(r.view.z) === stand.z);
+    for (let i = 0; i < HOUR * 2 && !there(); i++) h.step(1);
+    const miller = there()!;
+    expect(miller).toBeDefined();
+    expect(sim.stats.teleports).toBe(0);
+    world.set(stand.x, stand.y, stand.z, B.crate);
+    const jumps = stepCountingJumps(h, HOUR * 3);
+    // They could not walk out of it, so they were put on the floor beside it: once, a step away, and on the count.
+    expect(sim.stats.teleports).toBe(1);
+    expect(jumps).toBe(0);
+    expect(Math.floor(miller.view.x) === stand.x && Math.floor(miller.view.z) === stand.z).toBe(false);
+  });
+
+  it('lets someone whose bedside is built over sleep where they stand, not carried into bed uncounted', () => {
+    const h = createHeadlessVillage(3);
+    const { sim, world } = h;
+    const core = sim.core;
+    h.runTo(0, 13.5);
+    // A house with nobody in it at this hour; one bed in it has its bedside filled in to the roof, and every
+    // bit of floor within two steps, so that there is nowhere at all to stand by it.
+    const home = core.households.find((hh) => hh.site.b.kind === 'house' && hh.members.every((m) => m.inside !== core.sites.indexOf(hh.site)))!;
+    expect(home).toBeDefined();
+    const sleeper = home.members.find((m) => !m.child)!;
+    const { stand, block } = sleeper.bed;
+    for (let dz = -2; dz <= 2; dz++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let y = FEET; y < FEET + 3; y++) {
+          if (world.get(stand.x + dx, y, stand.z + dz) === B.air) world.set(stand.x + dx, y, stand.z + dz, B.stone);
+        }
+      }
+    }
+    expect(core.standNear(stand.x, stand.y, stand.z, 2)).toBeNull();
+    const jumps = stepCountingJumps(h, Math.round(HOUR * 12.5));
+    expect(h.clock.day).toBe(1);
+    // Asleep, somewhere they walked to. Nobody was moved a distance without its being counted, and nobody is on
+    // a bed they could not have reached unless the count says they were carried.
+    expect(sleeper.view.anim).toBe('sleep');
+    const onBed = Math.abs(sleeper.view.x - block.x - 0.5) < 0.9 && Math.abs(sleeper.view.z - block.z - 0.5) < 0.9 && Math.abs(sleeper.view.y - block.y - 9 / 16) < 0.2;
+    expect(onBed && sim.stats.teleports === 0).toBe(false);
+    expect(jumps).toBeLessThanOrEqual(sim.stats.teleports);
+    // The rest of the village slept as on any night.
+    const others = core.residents.filter((x) => x.home !== home);
+    expect(others.filter((x) => x.view.anim === 'sleep').length).toBeGreaterThan(others.length * 0.9);
+  });
+
   it('never seizes up when a house is walled shut: the household is put where it needs to be, and counted', () => {
     const h = createHeadlessVillage(3);
     const { sim, world } = h;
+    const coin = countCoin(sim);
     h.runTo(0, 12);
     const home = sim.core.households.find((hh) => hh.site.b.kind === 'house')!;
     const door = home.site.b.door!;
@@ -98,7 +177,8 @@ describe('village when the world is edited under it', () => {
     // Next day they are out again, at work or about the village.
     h.runTo(1, 10);
     expect(home.members.some((m) => m.inside !== sim.core.sites.indexOf(home.site))).toBe(true);
-    expect(sim.ledger().coin).toBe(sim.ledger().purses + sim.ledger().tills + sim.ledger().treasury);
+    // And no coin was made or lost in the muddle: the wallets hold what they held at the start.
+    expect(countCoin(sim)).toBe(coin);
   });
 });
 
@@ -139,6 +219,7 @@ describe('village on plans the fixture does not cover', () => {
     expect(sim.core.residents.length).toBe(3);
     expect(sim.core.businesses.length).toBe(0);
     expect(sim.views.length).toBe(3);
+    const coin = countCoin(sim);
     // Nobody to buy from and nothing to sell: they live on the larder, then on what they can forage.
     let worst = 0;
     for (let hour = 0; hour < 24 * 6; hour++) {
@@ -148,7 +229,12 @@ describe('village on plans the fixture does not cover', () => {
     expect(worst).toBeLessThan(0.95);
     expect(sim.stats.foraged).toBeGreaterThan(0);
     expect(sim.stats.teleports).toBe(0);
-    expect(sim.ledger().coin).toBe(sim.ledger().purses + sim.ledger().treasury);
+    // Six evenings of stipends and relief out of the chest, and every coin of it still in the village; no till
+    // holds any, since there is none.
+    expect(countCoin(sim)).toBe(coin);
+    expect(sim.ledger().coin).toBe(coin);
+    expect(sim.ledger().tills).toBe(0);
+    expect(sim.core.residents.reduce((n, r) => n + r.coin, 0)).toBeGreaterThan(0);
     expect(sim.quoteBuy('bread', 1)).toBeNull();
     expect(sim.quoteSell('bread', 1)).toBeNull();
     // 03:00 on the seventh night: all asleep at home.
@@ -159,10 +245,11 @@ describe('village on plans the fixture does not cover', () => {
   it('runs a bakery and a guardhouse with nothing to supply them', () => {
     const { h, step } = hamlet([['bakery', 'Bakehouse'], ['guardhouse', 'Watch house'], ['house', 'Cottage']]);
     const { sim } = h;
-    const coin = sim.ledger().coin;
+    const coin = countCoin(sim);
     step(HOUR * 24 * 4);
     // The baker bakes what flour there was, and the books still balance when it runs out.
     expect(sim.stats.breadBaked).toBeGreaterThan(0);
+    expect(countCoin(sim)).toBe(coin);
     expect(sim.ledger().coin).toBe(coin);
     expect(sim.stats.teleports).toBe(0);
     for (const b of sim.core.businesses) for (const n of b.stock) expect(n).toBeGreaterThanOrEqual(0);

@@ -33,6 +33,21 @@ export interface Headless {
 
 export const TICKS_PER_DAY = Math.round(DAY_SECONDS / SIM_DT);
 
+/**
+ * Every coin in the village, counted wallet by wallet. For tests of the
+ * accounts, which must not take the ledger's word for it: the ledger's total
+ * is the sum of its own parts by construction, so comparing the two proves
+ * nothing. Unchanged from one moment to the next, apart from what the player
+ * has paid in or been paid, means no coin was made or lost between them.
+ */
+export function countCoin(sim: VillageSim): number {
+  const core = sim.core;
+  let coin = core.treasury.coin;
+  for (const r of core.residents) coin += r.coin;
+  for (const b of core.businesses) coin += b.coin;
+  return coin;
+}
+
 export function createHeadlessVillage(seed = 1, options: HeadlessOptions = {}): Headless {
   const { world, plan } = createFixtureVillage(seed);
   const rng = new Rng(seed);

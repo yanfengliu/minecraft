@@ -6,7 +6,7 @@
 // changed road, a missed hour) needs no special handling.
 
 import { B, FACING_STEP, isBed } from '../../world/blocks';
-import { isStandable, standHeight } from '../../world/walk';
+import { isStandable, standCellNear, standHeight } from '../../world/walk';
 import type { AnimState, Cell } from '../api';
 import {
   MOVE_ARRIVED, MOVE_WALKING, PATH_FOUND, PATH_PENDING, VILLAGER_WALK, cellX, cellY, cellZ, nearestStandable, packCell, placeMover,
@@ -116,6 +116,17 @@ export function gaveUp(r: Resident, c: Cell): boolean {
   return true;
 }
 
+/**
+ * Put a resident in a cell they did not walk to, and count it. People in the
+ * village walk; this is the one way anybody is moved otherwise, so the count is
+ * of every time it happened.
+ */
+function carry(core: Core, r: Resident, x: number, y: number, z: number): void {
+  core.stats.teleports++;
+  placeMover(r.mover, core.world, core.doors, x, y, z);
+  r.inside = core.siteIndexAt(r.view.x, r.view.z);
+}
+
 function seek(core: Core, r: Resident): void {
   const v = r.view;
   const c = r.dest as Cell;
@@ -123,16 +134,23 @@ function seek(core: Core, r: Resident): void {
   let sy = feetY(v.y);
   let sz = Math.floor(v.z);
   if (!isStandable(core.world, sx, sy, sz, VILLAGER_WALK)) {
-    // Shut in a block someone placed, or knocked off the grid: step to the nearest footing first.
-    const k = nearestStandable(core.world, sx, sy, sz, 2, VILLAGER_WALK);
-    if (k < 0) {
-      failed(core, r);
-      return;
+    // Stopped half-way up or down a step, the feet are between two levels: the walker is in this column all
+    // the same, at whichever level it can be stood in, and sets off again from where they are.
+    const level = standCellNear(core.world, sx, sz, sy, 1, VILLAGER_WALK);
+    if (level >= 0) {
+      sy = level;
+    } else {
+      // Shut in a block someone placed, or knocked off the grid: put on the nearest footing first.
+      const k = nearestStandable(core.world, sx, sy, sz, 2, VILLAGER_WALK);
+      if (k < 0) {
+        failed(core, r);
+        return;
+      }
+      sx = cellX(k);
+      sy = cellY(k);
+      sz = cellZ(k);
+      carry(core, r, sx, sy, sz);
     }
-    sx = cellX(k);
-    sy = cellY(k);
-    sz = cellZ(k);
-    placeMover(r.mover, core.world, core.doors, sx, sy, sz);
   }
   r.req = core.nav.request(sx, sy, sz, c.x, c.y, c.z, r.goCache);
   r.phase = PHASE_SEEK;
@@ -181,9 +199,7 @@ function failed(core: Core, r: Resident): void {
   r.tries++;
   if (r.tries >= MAX_TRIES) {
     // The village must not seize up because one route is cut: put them there, and count it.
-    core.stats.teleports++;
-    placeMover(r.mover, core.world, core.doors, c.x, c.y, c.z);
-    r.inside = core.siteIndexAt(r.view.x, r.view.z);
+    carry(core, r, c.x, c.y, c.z);
     r.tries = 0;
     r.failKey = -1;
     r.phase = PHASE_IDLE;
@@ -224,11 +240,13 @@ export function face(r: Resident, c: Cell): void {
 }
 
 /**
- * Sit down for a while. The resident must be standing in `seat`; if a stool
- * stands beside that cell they sit on it, otherwise where they are.
+ * Sit down for a while. A resident standing in `seat` sits on a stool beside
+ * that cell if there is one; otherwise, and when they could not get to the
+ * seat (a firm `go` with no footing there is done from where they are), they
+ * sit where they stand. Nobody is moved to a stool they did not walk up to.
  */
 export function sit(core: Core, r: Resident, seat: Cell, seconds: number, held = -1, done: (() => void) | null = null, anim: AnimState = 'sit'): void {
-  if (!r.perch) {
+  if (!r.perch && core.at(r.view, seat)) {
     const world = core.world;
     for (const [dx, dz] of FACING_STEP) {
       if (world.get(seat.x + dx, seat.y, seat.z + dz) !== B.stool) continue;
@@ -256,9 +274,15 @@ export function sit(core: Core, r: Resident, seat: Cell, seconds: number, held =
   r.fxKind = '';
 }
 
-/** Lie down on one's own bed. The resident must be at the bed's stand. */
+/**
+ * Lie down: on one's own bed, from its stand. Whoever could not get to the
+ * bedside (it has been built over, and a firm `go` with no footing there is
+ * done from where they are) lies down where they stand, as does someone whose
+ * bed is gone. Nobody is moved onto a bed they did not walk up to.
+ */
 export function lieDown(core: Core, r: Resident): void {
   const bed = r.bed;
+  if (!core.at(r.view, bed.stand)) return;
   const state = core.world.get(bed.block.x, bed.block.y, bed.block.z);
   r.perch = bed.stand;
   if (!isBed(state)) return;

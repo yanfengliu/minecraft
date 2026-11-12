@@ -17,6 +17,8 @@ import { HUNGER_URGENT, eatFromLarder, eatFromStock, foodIn, larderFood } from '
 const BREAD_ITEM = ITEM_ID[G.bread] as number;
 /** Hunger taken off by a spell of foraging, by season: lean in spring, leaner in winter. */
 const FORAGE = [0.3, 0.45, 0.45, 0.2];
+/** Simulated seconds someone hungry with a bare larder waits before trying the shops again. */
+const SHOP_AGAIN = 30;
 
 /**
  * Have a meal. `bit` is the MEAL_* flag to set once eaten. With `packed` the
@@ -85,10 +87,13 @@ function fullestShelves(core: Core): Business | null {
 }
 
 function hungryWithNothing(core: Core, econ: Economy, r: Resident, bit: number): void {
-  // An adult with coin goes and buys; the routine will find them eating from the basket next.
-  if (!r.child && r.coin > 0 && r.retryAt <= core.env.now) {
+  // An adult with coin goes and buys; the routine will find them eating from the basket next. One trip, and
+  // then whatever it brought: back at the same counter with the same purse nothing would have changed, so a
+  // trip that ends with no food in the basket is followed by a meal given or found, not by another trip.
+  const onTheWay = r.targetId > 0;
+  if (!r.child && (onTheWay || (r.coin > 0 && r.shopAgainAt <= core.env.now))) {
+    r.shopAgainAt = core.env.now + SHOP_AGAIN;
     if (shop(core, econ, r, 2)) return;
-    r.retryAt = core.env.now + 30;
   }
   if (r.hunger < 0.55) {
     // Not yet pressing: go without this meal and see what the day brings.

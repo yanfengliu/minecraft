@@ -308,10 +308,10 @@ export function farmWork(core: Core, econ: Economy, r: Resident, penChores: (r: 
 function yardWork(core: Core, econ: Economy, r: Resident, outdoors: boolean): void {
   const farm = r.job as Business;
   const home = r.home;
-  if (outdoors && (home.larder[G.firewood] as number) < 8 && r.retryAt <= core.env.now) {
+  if (outdoors && (home.larder[G.firewood] as number) < 8 && r.firewoodAt <= core.env.now) {
     if (r.target && gaveUp(r, r.target)) {
       r.target = null;
-      r.retryAt = core.env.now + 60;
+      r.firewoodAt = core.env.now + 60;
     } else {
       r.activity = 'Gathering firewood';
       r.outdoor = true;
@@ -331,7 +331,7 @@ function yardWork(core: Core, econ: Economy, r: Resident, outdoors: boolean): vo
           home.larder[G.firewood] = (home.larder[G.firewood] as number) + 2;
           econ.made(G.firewood, 2);
           r.target = null;
-          r.retryAt = core.env.now + 120;
+          r.firewoodAt = core.env.now + 120;
         });
         return;
       }

@@ -176,15 +176,26 @@ export class Economy {
   // --- trade between villagers -----------------------------------------------
 
   /**
+   * How many of `qty` units of a good a buyer could have from a business at
+   * its posted price: what the shelf holds and the purse covers. `sell` sells
+   * exactly this many, so whoever asks first knows what a walk there is worth.
+   */
+  buyable(seller: Business, g: number, qty: number, buyer: Wallet): number {
+    const price = seller.price[g] as number;
+    let n = Math.min(qty, seller.stock[g] as number, Math.floor((buyer.coin + 0.5) / price));
+    while (n > 0 && this.cost(price, n) > buyer.coin) n--;
+    return Math.max(0, n);
+  }
+
+  /**
    * Sell up to `qty` units of a good from a business to a buyer at the posted
    * price, as many as the stock and the buyer's coin allow. The fee goes to the
    * treasury. Returns the units sold; the caller puts them where they belong.
    */
   sell(seller: Business, g: number, qty: number, buyer: Wallet): number {
-    const price = seller.price[g] as number;
-    let n = Math.min(qty, seller.stock[g] as number, Math.floor((buyer.coin + 0.5) / price));
-    while (n > 0 && this.cost(price, n) > buyer.coin) n--;
+    const n = this.buyable(seller, g, qty, buyer);
     if (n <= 0) return 0;
+    const price = seller.price[g] as number;
     const total = this.cost(price, n);
     const fee = Math.floor(total * MARKET_FEE);
     this.pay(buyer, seller, total - fee);
@@ -380,7 +391,12 @@ export class Economy {
     return { ok: true, coins };
   }
 
-  /** The business that would pay most for `qty` units from the player and can afford them, with its offer. */
+  /**
+   * The business that would pay most for `qty` units from the player and can
+   * afford them, with its offer. Coins are whole, and the offer is rounded
+   * down, so a lot worth less than one coin gets no offer at all: nobody is
+   * asked to hand goods over for nothing.
+   */
   private bid(g: number, qty: number): { buyer: Business; coins: number; unit: number } | null {
     let best: { buyer: Business; coins: number; unit: number } | null = null;
     for (const b of this.core.businesses) {
@@ -391,7 +407,7 @@ export class Economy {
       if (stock + qty > target * 3 + 10) continue;
       const unit = BUY_BACK * Math.min(b.price[g] as number, this.wanted(b, g, stock + qty / 2));
       const coins = Math.floor(unit * qty);
-      if (coins > b.coin) continue;
+      if (coins <= 0 || coins > b.coin) continue;
       if (!best || coins > best.coins) best = { buyer: b, coins, unit };
     }
     return best;

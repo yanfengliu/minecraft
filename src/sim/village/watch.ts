@@ -28,8 +28,12 @@ const LAMP_GRACE = 3;
 
 interface Lamp {
   cell: Cell;
+  /** Where a guard stands to tend it, or null when there is no ground beside it. */
   stand: Cell | null;
+  /** The lantern is on its post. One that has been broken off is nobody's errand until another is hung there. */
+  there: boolean;
   lit: boolean;
+  /** Clock time before which nobody tries it again after finding no way to it. */
   skipUntil: number;
 }
 
@@ -41,20 +45,25 @@ export class Lights {
   /** Clock time the lamps were last due to change, to know how overdue they are. */
   private turnedAt = 0;
   private wasWanted: boolean;
+  private readonly watch: Resident[];
   readonly guards: number;
 
   constructor(core: Core) {
     this.core = core;
     this.awake = new Int16Array(core.sites.length);
-    this.lamps = core.plan.lamps.map((cell) => ({ cell, stand: this.standBy(cell), lit: this.isLit(cell), skipUntil: 0 }));
+    this.lamps = core.plan.lamps.map((cell) => ({ cell, stand: this.standBy(cell), there: true, lit: false, skipUntil: 0 }));
+    for (const lamp of this.lamps) this.look(lamp);
     this.wasWanted = this.lampsWanted();
     this.turnedAt = core.env.now - LAMP_GRACE * 60;
-    this.guards = core.residents.filter((r) => r.trade === TRADE.guard).length;
+    this.watch = core.residents.filter((r) => r.trade === TRADE.guard);
+    this.guards = this.watch.length;
   }
 
-  private isLit(c: Cell): boolean {
-    const s = this.core.world.get(c.x, c.y, c.z);
-    return s === B.lantern + 1 || s === B.hanging_lantern + 1;
+  /** Believe the block: the player may have lit a lamp, snuffed it or taken it away. */
+  private look(lamp: Lamp): void {
+    const s = this.core.world.get(lamp.cell.x, lamp.cell.y, lamp.cell.z);
+    lamp.there = (s >= B.lantern && s < B.lantern + 2) || (s >= B.hanging_lantern && s < B.hanging_lantern + 2);
+    lamp.lit = s === B.lantern + 1 || s === B.hanging_lantern + 1;
   }
 
   /** Ground beside a lamp to stand on while tending it: a lamp sits on a post or hangs from an arm, a few blocks up. */
@@ -79,11 +88,36 @@ export class Lights {
     return env.hour >= env.sunset - LAMPS_BEFORE_SUNSET || env.hour < env.sunrise + LAMPS_AFTER_SUNRISE;
   }
 
-  /** True when some lamp is not in the state the hour calls for. */
-  lampsPending(): boolean {
+  /**
+   * The lamp a guard should see to next: the one already being walked to, or
+   * else the nearest that is in the wrong state, has ground beside it, has not
+   * just been found out of reach, and has no mate on the way to it. Null when
+   * there is nothing for this guard to do: a lamp that cannot be tended, or
+   * that one of the watch already has in hand, keeps nobody from supper or the
+   * patrol.
+   */
+  private pick(r: Resident): Lamp | null {
     const want = this.lampsWanted();
-    for (const lamp of this.lamps) if (lamp.lit !== want) return true;
-    return false;
+    const now = this.core.env.now;
+    let best: Lamp | null = null;
+    let bestD = Infinity;
+    for (const lamp of this.lamps) {
+      if (!lamp.there || lamp.lit === want || !lamp.stand || lamp.skipUntil > now) continue;
+      // A guard on the way to a lamp has its stand as their target: the same object, which nothing else is ever given.
+      if (r.target === lamp.stand) return lamp;
+      if (this.watch.some((o) => o !== r && o.target === lamp.stand)) continue;
+      const d = (lamp.cell.x - r.view.x) ** 2 + (lamp.cell.z - r.view.z) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = lamp;
+      }
+    }
+    return best;
+  }
+
+  /** True when there is a street lamp for this guard to light or put out. */
+  lampWaiting(r: Resident): boolean {
+    return this.pick(r) !== null;
   }
 
   /** Once a simulated second. */
@@ -122,64 +156,48 @@ export class Lights {
       this.wasWanted = wanted;
       this.turnedAt = now;
     }
-    // The player may have lit or snuffed a lamp; believe the block.
-    for (const lamp of this.lamps) lamp.lit = this.isLit(lamp.cell);
+    for (const lamp of this.lamps) this.look(lamp);
     // No watch, or a lamp nobody could reach: it is seen to all the same, a good while late.
     if (this.guards === 0 || now - this.turnedAt > LAMP_GRACE * 60) {
       for (const lamp of this.lamps) {
-        if (lamp.lit === wanted) continue;
+        if (!lamp.there || lamp.lit === wanted) continue;
         core.setLit(lamp.cell, wanted);
-        lamp.lit = wanted;
+        this.look(lamp);
       }
     }
   }
 
   /**
-   * Walk to the nearest lamp that needs lighting or putting out and see to it.
-   * Returns false when there is none left for this guard. Uses `r.targetId`
-   * (lamp index + 1) and `r.target`.
+   * Walk to the lamp `pick` chooses and light it or put it out. Returns false
+   * when there is none for this guard. Uses `r.target` (the lamp's stand).
    */
   lampRound(r: Resident): boolean {
     const core = this.core;
-    const want = this.lampsWanted();
-    const now = core.env.now;
-    let lamp = r.targetId > 0 ? this.lamps[r.targetId - 1] ?? null : null;
-    if (lamp && r.target && gaveUp(r, r.target)) {
-      lamp.skipUntil = now + 600;
-      lamp = null;
+    if (r.target && gaveUp(r, r.target)) {
+      // No way to it just now: it is left a while, and to the others, rather than tried again at once.
+      const lost = this.lamps.find((l) => l.stand === r.target);
+      if (lost) lost.skipUntil = core.env.now + 600;
+      r.target = null;
     }
-    if (lamp && lamp.lit === want) lamp = null;
+    const lamp = this.pick(r);
     if (!lamp) {
-      r.targetId = 0;
-      let bestD = Infinity;
-      for (let i = 0; i < this.lamps.length; i++) {
-        const l = this.lamps[i] as Lamp;
-        if (l.lit === want || l.skipUntil > now || !l.stand) continue;
-        // Leave to a mate the lamp they are already walking to.
-        const taken = core.residents.some((o) => o !== r && o.trade === TRADE.guard && o.targetId === i + 1 && o.goal === r.goal);
-        if (taken) continue;
-        const d = (l.cell.x - r.view.x) ** 2 + (l.cell.z - r.view.z) ** 2;
-        if (d < bestD) {
-          bestD = d;
-          lamp = l;
-          r.targetId = i + 1;
-        }
-      }
-      if (!lamp) return false;
+      r.target = null;
+      return false;
     }
+    const want = this.lampsWanted();
     const stand = lamp.stand as Cell;
-    const chosen = lamp;
     r.target = stand;
     r.activity = want ? 'Lighting the street lamps' : 'Putting out the street lamps';
     if (!go(core, r, stand, true)) return true;
-    face(r, chosen.cell);
+    face(r, lamp.cell);
     act(core, r, 'work', 2, -1, () => {
-      if (chosen.lit !== want) {
-        core.setLit(chosen.cell, want);
-        chosen.lit = want;
-        if (want) core.stats.lampsLit++;
+      // It may have been lit, snuffed or carried off while the guard walked over; what counts is what the block does.
+      this.look(lamp);
+      if (lamp.there && lamp.lit !== want) {
+        core.setLit(lamp.cell, want);
+        this.look(lamp);
+        if (want && lamp.lit) core.stats.lampsLit++;
       }
-      r.targetId = 0;
       r.target = null;
     });
     return true;

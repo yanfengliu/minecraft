@@ -86,8 +86,8 @@ export function homeEvening(p: Parts, r: Resident): void {
 
 /**
  * An evening at the tavern: a seat, a mug of ale if the purse runs to it, and
- * talk. Returns false when the house is full. Uses `r.step` (sittings so far)
- * and `r.targetId` (sittings left on the mug in hand).
+ * talk. Returns false when the house is full. Uses `r.step` (sittings so far);
+ * the mug itself is `r.mug`, which is kept through whatever else comes up.
  */
 export function tavernEvening(p: Parts, r: Resident, tavern: Business): boolean {
   const { core, econ } = p;
@@ -98,16 +98,16 @@ export function tavernEvening(p: Parts, r: Resident, tavern: Business): boolean 
   r.activity = `Drinking at ${site.b.name}`;
   if (!go(core, r, place)) return true;
   // A mug on sitting down, and perhaps one more later for those who can afford it. A mug lasts three sittings.
-  if (r.targetId === 0 && (r.step === 0 || (r.step === 5 && r.coin > 25 && core.rng.chance(0.5)))) {
+  if (r.mug === 0 && (r.step === 0 || (r.step === 5 && r.coin > 25 && core.rng.chance(0.5)))) {
     if (econ.sell(tavern, G.ale, 1, r) > 0) {
       econ.used(G.ale, 1);
       r.social = Math.min(1, r.social + 0.08);
-      r.targetId = 3;
+      r.mug = 3;
     }
   }
   r.step++;
-  const drinking = r.targetId > 0;
-  if (drinking) r.targetId--;
+  const drinking = r.mug > 0;
+  if (drinking) r.mug--;
   idleInCompany(p, r, place, seat !== null, drinking ? ALE_ITEM : -1);
   return true;
 }

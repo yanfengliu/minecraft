@@ -16,11 +16,11 @@ import { G, PROFESSIONS } from './goods';
 import { inspectAnimal, inspectResident } from './inspect';
 import { Livestock } from './livestock';
 import { PHASE_ACT, PHASE_IDLE, PHASE_WALK, type VillageStats } from './model';
-import { Woods } from './outdoor';
 import { populate } from './populate';
 import { Routine } from './routine';
 import { Social } from './social';
 import { Lights } from './watch';
+import { Woods } from './woods';
 
 export type { LedgerGood, LedgerView } from './economy';
 export type { VillageStats } from './model';
@@ -159,7 +159,8 @@ export class VillageSim {
       r.needsAt = Math.min(r.needsAt, now);
       r.quietUntil = Math.min(r.quietUntil, now + 120);
       r.bubbleUntil = Math.min(r.bubbleUntil, soon);
-      r.retryAt = Math.min(r.retryAt, soon);
+      r.shopAgainAt = Math.min(r.shopAgainAt, soon);
+      r.firewoodAt = Math.min(r.firewoodAt, soon);
       r.restUntil = Math.min(r.restUntil, soon);
       r.plotRetryAt = Math.min(r.plotRetryAt, soon);
     }
@@ -223,6 +224,7 @@ export class VillageSim {
 
   /** Stop listening to the world. Call when the simulation is thrown away. */
   dispose(): void {
+    this.woods.dispose();
     this.core.dispose();
   }
 }
