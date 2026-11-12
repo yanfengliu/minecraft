@@ -62,7 +62,7 @@ Toolchain: Node 24, pinned in `.nvmrc`. `npm run verify` runs every gate below i
 
 - `npm run typecheck` — strict `tsc` over `src` (DOM types) and over the configs and browser tests (Node types).
 - `npm run lint` — ESLint with zero warnings allowed.
-- `npm test` — Vitest over `src/**/*.test.ts`: unit and property tests, and headless simulation soaks that run in-game weeks.
+- `npm test` — Vitest over `src/**/*.test.ts`: unit and property tests, and headless simulation soaks that run in-game weeks. Each simulation soaks on a small fixture of its own; `src/life.test.ts` runs the village and the wildlife together on the island the game generates, which is where a limit tuned on a fixture shows.
 - `npm run docs:check` — Markdown links resolve, the fleet doc shape holds, every queued lesson names its gate, no file breaks the size limits.
 - `npm run test:browser` — builds, serves the production build and drives it in Chromium on the GPU. It fails on a software renderer unless `ALLOW_SOFTWARE_GL=1` says the host has none.
 
