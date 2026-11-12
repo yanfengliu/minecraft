@@ -58,6 +58,29 @@ describe('physics', () => {
     physics.dispose();
   });
 
+  it('goes back into the grid once the player, or an item, is out of the cell it lies in', async () => {
+    const { world, physics } = await setup({ settleTime: 1 });
+    // Two blocks at rest, square to the grid, each a third of a metre east of the middle of its cell. In
+    // the strip of cell that leaves free stands the player beside the first, and lies a loaf beside the second.
+    physics.spawnBlock(B.oak_planks, 20.85, TOP + 0.5, 20.5);
+    physics.spawnBlock(B.bricks, 22.85, TOP + 0.5, 24.5);
+    const loaf = physics.spawnItem(item('bread').id, 1, 22.15, TOP + 0.16, 24.5);
+    run(physics, 5, () => physics.setPusher(19.95, TOP, 20.5, 0.3, 1.8));
+    // Neither could be put back: it would wall the player in, or bury the loaf.
+    expect(physics.bodies).toHaveLength(3);
+    expect(physics.bodies.filter((b) => b.kind === 'block').every((b) => b.sleeping)).toBe(true);
+    expect(world.get(20, TOP, 20)).toBe(B.air);
+    expect(world.get(22, TOP, 24)).toBe(B.air);
+    // The player walks off, and somebody picks up the loaf. Nothing touches the blocks themselves.
+    expect(physics.collectItems(22.15, TOP + 0.15, 24.5, 0.4)).toEqual([{ item: item('bread').id, count: 1 }]);
+    expect(physics.bodies.some((b) => b.id === loaf)).toBe(false);
+    run(physics, 2.5, () => physics.setPusher(40.5, TOP, 40.5, 0.3, 1.8));
+    expect(world.get(20, TOP, 20)).toBe(B.oak_planks);
+    expect(world.get(22, TOP, 24)).toBe(B.bricks);
+    expect(physics.bodies).toHaveLength(0);
+    physics.dispose();
+  });
+
   it('lays a toppled log down with its grain along the ground', async () => {
     const { world, physics } = await setup();
     // Three logs end to end, lying on their side a little above the ground, as a compound turned a quarter about z.
@@ -161,6 +184,27 @@ describe('physics', () => {
     physics.collectItems(20.5, TOP + 0.5, 20.5, 3);
     physics.step(RIGID_DT);
     expect(physics.pickBody(16.5, TOP + 0.5, 20.5, 1, 0, 0, 20)?.id).toBe(brick);
+    physics.dispose();
+  });
+
+  it('does not let a dropped item come between the crosshair and what lies behind it', async () => {
+    const { physics } = await setup({ settleTime: 1e9 });
+    const brick = physics.spawnBlock(B.bricks, 24.5, TOP + 0.5, 20.5);
+    const loafId = physics.spawnItem(item('bread').id, 1, 21.5, TOP + 0.16, 20.5);
+    const loaf = physics.bodies.find((b) => b.id === loafId) as BodyView;
+    run(physics, 1);
+    // The loaf lies on the line from the eye to the brick: a ray a hand's height above the ground goes through it.
+    expect(Math.abs(loaf.x - 21.5)).toBeLessThan(0.1);
+    expect(Math.abs(loaf.y - (TOP + 0.15))).toBeLessThan(0.02);
+    expect(Math.abs(loaf.z - 20.5)).toBeLessThan(0.1);
+    const hit = physics.pickBody(18.5, TOP + 0.15, 20.5, 1, 0, 0, 20);
+    expect(hit?.id).toBe(brick);
+    expect(hit?.distance).toBeCloseTo(24 - 18.5, 1);
+    // With only items in front of it the ray meets nothing, so the block ray behind it is left at full reach.
+    expect(physics.breakBody(brick)).toBe(true);
+    physics.step(RIGID_DT);
+    expect(physics.bodies.filter((b) => b.kind === 'item')).toHaveLength(2);
+    expect(physics.pickBody(18.5, TOP + 0.15, 20.5, 1, 0, 0, 20)).toBeNull();
     physics.dispose();
   });
 
@@ -301,6 +345,40 @@ describe('physics', () => {
     expect(plank.y).toBeLessThan(TOP + depth(29) + 0.1);
     expect(physics.stats.falling).toBe(0);
     console.log(`physics together: water ${depth(23).toFixed(2)} and ${depth(29).toFixed(2)} blocks deep either side; plank centre ${(TOP + depth(29) - plank.y).toFixed(2)} m below the surface`);
+    physics.dispose();
+  });
+
+  it('keeps every unit of water when a block is placed in it, a crop is sown in it and a tree grows up through it', async () => {
+    const { world, physics } = await setup();
+    // A walled pond 8 x 8: one block of water and half a block more.
+    for (let y = TOP; y <= TOP + 2; y++) {
+      for (let z = 19; z <= 28; z++) {
+        for (let x = 19; x <= 28; x++) {
+          const wall = x === 19 || x === 28 || z === 19 || z === 28;
+          if (wall) world.setRaw(x, y, z, B.stone);
+          else if (y < TOP + 2) world.setRaw(x, y, z, waterState(y === TOP ? 16 : 8));
+        }
+      }
+    }
+    const standing = (): number => {
+      let u = 0;
+      for (let y = TOP; y < TOP + 12; y++) for (let z = 18; z <= 29; z++) for (let x = 18; x <= 29; x++) u += WATER_LEVEL[world.get(x, y, z)] as number;
+      return u;
+    };
+    const before = standing();
+    expect(before).toBe(64 * 24);
+    // Each of these is somebody outside physics writing straight into the grid, as the player, a farmer and the flora do.
+    world.set(21, TOP, 21, B.cobble);
+    world.set(26, TOP + 1, 21, B.wheat);
+    expect(growTree(world, 24, TOP, 24, 'birch', new Rng(3))).toBe(true);
+    expect(standing()).toBe(before);
+    run(physics, 12);
+    expect(physics.stats.fluidActive).toBe(0);
+    expect(standing()).toBe(before);
+    // The books agree: nothing was poured, made, swallowed, dried or lost on the way.
+    expect(physics.ledger.water).toEqual({ poured: 0, created: 0, absorbed: 0, evaporated: 0, lost: 0 });
+    expect(world.get(21, TOP, 21)).toBe(B.cobble);
+    expect(IS_LOG[world.get(24, TOP, 24)]).toBe(1);
     physics.dispose();
   });
 

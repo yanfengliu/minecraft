@@ -4,6 +4,11 @@
 // through rubble and stand inside logs. The shove is as strong as it needs to
 // be to keep a body moving ahead of the player, for the same reason: anything
 // too heavy to push would simply be walked through.
+//
+// The player's speed is not told to physics, only where they are, once per
+// outer step. It is worked out from how far they moved and how long the step
+// that followed was, so the shove is the same at any frame rate: the same
+// walk reported 30 or 144 times a second moves a rock the same way.
 
 import RAPIER, { type Collider, type Cuboid } from '@dimforge/rapier3d-compat';
 import type { Body } from './body';
@@ -15,8 +20,15 @@ const CLEARANCE = 0.6;
 const PUSH_MASS = 3000;
 /** Substeps a reported position stays in force: the player has gone if `set` stops being called. */
 const LIVE_STEPS = 30;
-/** A reported move longer than this in one step is a teleport and carries no velocity. */
+/** A reported move longer than this, or faster than `TOO_FAST`, is a teleport and carries no velocity. */
 const TELEPORT = 3;
+const TOO_FAST = 60;
+/**
+ * The speed is averaged over about this long, in seconds. The player's own
+ * motion advances in fixed steps that need not line up with the frames it is
+ * reported in, so one frame's move can be a step more or less than its share.
+ */
+const SMOOTHING = 0.05;
 
 const NO_TURN = { x: 0, y: 0, z: 0, w: 1 };
 
@@ -26,10 +38,14 @@ export class Pusher {
   private z = 0;
   private half = 0.3;
   private height = 1.8;
-  /** Displacement since the previous report, not yet turned into a shove. */
-  private mx = 0;
-  private mz = 0;
-  private fresh = false;
+  /** Where the player was when their speed was last worked out, and whether they have reported since. */
+  private fromX = 0;
+  private fromZ = 0;
+  private reported = false;
+  /** The player's speed, m/s, and for how many more seconds of substeps it is to be believed. */
+  private vx = 0;
+  private vz = 0;
+  private hold = 0;
   private live = 0;
   private shape: Cuboid | null = null;
   private readonly hits: Collider[] = [];
@@ -40,14 +56,15 @@ export class Pusher {
     return true;
   };
 
-  /** Report where the player's body is: feet position, half width and height. */
+  /** Report where the player's body is: feet position, half width and height. Call it before the outer step their move belongs to. */
   set(x: number, y: number, z: number, halfWidth: number, height: number): void {
-    const dx = x - this.x;
-    const dz = z - this.z;
-    const moved = this.live > 0 && Math.hypot(dx, dz) <= TELEPORT;
-    this.mx = moved ? dx : 0;
-    this.mz = moved ? dz : 0;
-    this.fresh = moved;
+    if (this.live <= 0) {
+      // Not heard from for a while: wherever they were before says nothing about how they are moving now.
+      this.fromX = x;
+      this.fromZ = z;
+      this.vx = 0;
+      this.vz = 0;
+    }
     this.x = x;
     this.y = y;
     this.z = z;
@@ -55,6 +72,33 @@ export class Pusher {
     this.half = halfWidth;
     this.height = height;
     this.live = LIVE_STEPS;
+    this.reported = true;
+  }
+
+  /**
+   * An outer step of `dt` seconds is about to be simulated. The move reported
+   * since the last one took that long, which gives the player's speed; it is
+   * held for those `dt` seconds of substeps and then, with no new report, the
+   * player is taken to be standing where they were last seen.
+   */
+  advance(dt: number): void {
+    if (!this.reported) return;
+    this.reported = false;
+    const dx = this.x - this.fromX;
+    const dz = this.z - this.fromZ;
+    this.fromX = this.x;
+    this.fromZ = this.z;
+    const moved = Math.hypot(dx, dz);
+    if (moved > TELEPORT || moved > TOO_FAST * dt) {
+      this.vx = 0;
+      this.vz = 0;
+      this.hold = 0;
+      return;
+    }
+    const blend = 1 - Math.exp(-dt / SMOOTHING);
+    this.vx += (dx / dt - this.vx) * blend;
+    this.vz += (dz / dt - this.vz) * blend;
+    this.hold = dt;
   }
 
   /** True when the player's body overlaps this cell. */
@@ -63,14 +107,14 @@ export class Pusher {
       && y + 1 > this.y && y < this.y + this.height;
   }
 
-  /** Shove every body the player's box overlaps. Called once per substep, before the step. */
+  /** Shove every body the player's box overlaps. Called once per substep of `dt` seconds, before the step. */
   apply(sys: RigidBodies, step: number, dt: number): void {
     if (this.live <= 0) return;
     this.live--;
-    // The reported move covered one outer step: it is the player's velocity for the first substep after the report.
-    const pvx = this.fresh ? this.mx / dt : 0;
-    const pvz = this.fresh ? this.mz / dt : 0;
-    this.fresh = false;
+    const moving = this.hold > 1e-9;
+    const pvx = moving ? this.vx : 0;
+    const pvz = moving ? this.vz : 0;
+    this.hold -= dt;
     this.shape ??= new RAPIER.Cuboid(this.half, this.height / 2, this.half);
     const hits = this.hits;
     hits.length = 0;

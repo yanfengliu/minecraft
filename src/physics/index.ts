@@ -9,7 +9,7 @@
 // Headless and deterministic: no DOM, no randomness, no wall clock. The same
 // sequence of edits and `step(dt)` calls gives the same world and bodies.
 
-import RAPIER from '@dimforge/rapier3d-compat';
+import RAPIER, { type Collider } from '@dimforge/rapier3d-compat';
 import { Emitter } from '../core/events';
 import { LOOSE, REPLACEABLE, SOLID, STATE_COUNT } from '../world/blocks';
 import type { ItemStack } from '../world/items';
@@ -21,16 +21,19 @@ import { LooseBlocks } from './loose';
 import { RigidBodies } from './rigid';
 import { toItems } from './settle';
 import { Structure, type DetachedCell } from './structure';
-import { FLUID_DT, RIGID_DT, type BodyView, type PhysicsEvent, type PhysicsOptions, type PhysicsStats } from './types';
+import { FLUID_DT, RIGID_DT, type BodyView, type PhysicsEvent, type PhysicsLedger, type PhysicsOptions, type PhysicsStats } from './types';
 
 export { FLUID_DT, GRAVITY, ITEM_SIZE, RIGID_DT } from './types';
-export type { BodyCell, BodyKind, BodyView, PhysicsEvent, PhysicsOptions, PhysicsStats } from './types';
+export type { BodyCell, BodyKind, BodyView, PhysicsEvent, PhysicsLedger, PhysicsOptions, PhysicsStats } from './types';
 
 /** Longest stretch of real time one `step` will simulate; a longer frame is slowed down rather than caught up. */
 const MAX_STEP = 0.25;
 const MAX_FLUID_TICKS = 2;
 /** A felled tree leans away from the player when they are this close, in blocks. */
 const LEAN_RANGE = 6;
+
+/** Ray filter: every collider but a dropped item's. It only reads our own record of the body, never the physics world. */
+const NOT_AN_ITEM = (collider: Collider): boolean => (collider.parent()?.userData as Body | undefined)?.kind !== 'item';
 
 /** Per state: 1 when a change to or from it can matter to anything but the fluid. */
 const MATTERS = new Uint8Array(STATE_COUNT);
@@ -91,7 +94,6 @@ export class Physics {
     this.rigid = new RigidBodies(world, { ...shared, fluid: this.fluid }, opts);
     this.loose = new LooseBlocks(world, {
       ...shared,
-      displace: (x, y, z) => this.fluid.displace(x, y, z),
       blocked: (x, y, z) => this.rigid.pusherIn(x, y, z),
       drop,
     }, { seed: opts.seed });
@@ -103,6 +105,16 @@ export class Physics {
       drop,
     }, { seed: opts.seed, pieceSize: opts.pieceSize, maxLeavesPerTree: opts.maxLeavesPerTree, cantilever: opts.cantilever });
     this.unsubscribe = world.changed.on(this.onChange);
+  }
+
+  /** The books on what physics conserves: finite water by cause, and the blocks and items it has let go for good. A fresh snapshot of the water figures each time it is read. */
+  get ledger(): PhysicsLedger {
+    const f = this.fluid;
+    return {
+      water: { poured: f.poured, created: f.created, absorbed: f.absorbed, evaporated: f.evaporated, lost: f.lost },
+      blocksGone: this.rigid.blocksGone,
+      itemsGone: this.rigid.itemsGone,
+    };
   }
 
   /** Stop listening to the world and release the physics library's memory. The instance is dead afterwards. */
@@ -121,6 +133,8 @@ export class Physics {
     const now = this.now;
     const s = this.stats;
     const t0 = now ? now() : 0;
+    // The whole of it, not the part simulated: the player moved for as long as the frame lasted.
+    this.rigid.pusher.advance(dt);
     dt = Math.min(dt, MAX_STEP);
     this.rigidTime += dt;
     this.fluidTime += dt;
@@ -194,8 +208,11 @@ export class Physics {
 
   /**
    * Tell physics where the player's body is: feet at (x, y, z), a box
-   * `halfWidth` to each side and `height` tall. Call it once per `step`. Bodies
-   * it overlaps are shoved aside, and nothing lands or re-forms inside it.
+   * `halfWidth` to each side and `height` tall. Call it once before each
+   * `step`, with where the player has got to in the time that step covers:
+   * their speed is taken from the move and the step's length, whatever the
+   * frame rate. Bodies the box overlaps are shoved aside, and nothing lands or
+   * re-forms inside it.
    */
   setPusher(x: number, y: number, z: number, halfWidth: number, height: number): void {
     this.pusher = { x, y, z };
@@ -212,22 +229,25 @@ export class Physics {
     return this.structure.fellTree(x, y, z);
   }
 
-  /** Pour finite water into a cell, in sixteenths of a block. Returns what fitted. */
+  /** Pour finite water into a cell, in whole sixteenths of a block. Returns what fitted; a source swallows it all. */
   addWater(x: number, y: number, z: number, units: number): number {
     return this.fluid.addWater(x, y, z, units);
   }
 
   /**
-   * The nearest rigid body or item a ray meets within `maxDistance` metres,
-   * as of the last step: what the player's crosshair is on, if it is on a
-   * body rather than the grid. Terrain does not stop the ray; compare the
-   * distance with the block hit by the caller's own grid ray.
+   * The nearest block or compound body a ray meets within `maxDistance`
+   * metres, as of the last step: what the player's crosshair is on, if it is
+   * on a body rather than the grid. Terrain does not stop the ray; compare the
+   * distance with the block hit by the caller's own grid ray. Dropped items do
+   * not stop it either: nothing can be done to one through the crosshair (it
+   * is picked up by walking over it), so one lying on a block or in front of
+   * a piece of rubble must not come between the player and that.
    */
   pickBody(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxDistance: number): { id: number; distance: number } | null {
     const length = Math.hypot(dx, dy, dz);
     if (!(length > 0)) return null;
     const ray = new RAPIER.Ray({ x: ox, y: oy, z: oz }, { x: dx / length, y: dy / length, z: dz / length });
-    const hit = this.rigid.rapier.castRay(ray, maxDistance, true, RAPIER.QueryFilterFlags.EXCLUDE_FIXED);
+    const hit = this.rigid.rapier.castRay(ray, maxDistance, true, RAPIER.QueryFilterFlags.EXCLUDE_FIXED, undefined, undefined, undefined, NOT_AN_ITEM);
     const body = hit?.collider.parent()?.userData as Body | undefined;
     return hit && body && !body.dead ? { id: body.view.id, distance: hit.timeOfImpact } : null;
   }
@@ -250,7 +270,9 @@ export class Physics {
     // The fluid's own edits are water, air and washed-out plants: nobody else's business, and it tracks them itself.
     if (this.fluid.busy) return;
     const { x, y, z, old, state } = c;
-    this.fluid.wake(x, y, z);
+    // Anybody else's may have gone into water (a block placed, a seed sown, a trunk grown, sand landing):
+    // the fluid is told what was there, so that water is moved aside instead of vanishing with the write.
+    this.fluid.edited(x, y, z, old, state);
     if ((MATTERS[old] as number) === 0 && (MATTERS[state] as number) === 0) return;
     this.loose.onBlockChanged(x, y, z, old, state);
     this.structure.onBlockChanged(x, y, z, old, state);

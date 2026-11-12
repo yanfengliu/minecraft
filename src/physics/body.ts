@@ -41,8 +41,12 @@ export interface Body {
   quiet: number;
   /** Seconds spent asleep in the current sleep. */
   asleep: number;
-  /** Set once a return to the grid has been tried and refused in this sleep. */
-  snapRefused: boolean;
+  /**
+   * Seconds of the current sleep after which a return to the grid is next tried: 0 until one has been
+   * refused, a little later than now when something was only in the way, and never (Infinity) when the
+   * body lies wrong for it, which cannot change until it moves.
+   */
+  settleAt: number;
   /** Consecutive steps its centre has been inside a full block. */
   buried: number;
   /** Step in which the player's body last shoved it, so several of its colliders touching the player count once. */

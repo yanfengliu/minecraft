@@ -108,6 +108,37 @@ export interface PhysicsOptions {
   maxFluidCells?: number;
 }
 
+/**
+ * The books physics keeps on what it conserves, since the instance was made.
+ * Nothing leaves the world any other way, so a test (or a debug readout) can
+ * hold the layer to its own invariants:
+ *
+ * - Finite water, in sixteenths of a block: what stands in the world is
+ *   always `poured + created - absorbed - evaporated - lost` more than there
+ *   was to begin with.
+ * - Blocks and items: a block that leaves the grid is in a body, is an item,
+ *   or was reported in a `burst` event; a body or item that is gone without
+ *   any of those (and without being collected) is counted here.
+ */
+export interface PhysicsLedger {
+  water: {
+    /** Brought in from outside: `addWater`, or water written straight into the grid. */
+    poured: number;
+    /** Made by sources (sea, lake, river) spilling into open cells. */
+    created: number;
+    /** Swallowed by sources. */
+    absorbed: number;
+    /** Dried up as thin films. */
+    evaporated: number;
+    /** Destroyed: something was put where it stood and there was nowhere to push it. */
+    lost: number;
+  };
+  /** Blocks of bodies that fell off the world, or were entombed with no way out: a count per block state. */
+  blocksGone: ReadonlyMap<number, number>;
+  /** Items that lay past their lifetime, were the oldest when there were too many, or fell off the world: a count per item id. */
+  itemsGone: ReadonlyMap<number, number>;
+}
+
 export interface PhysicsStats {
   /** Cells the fluid will examine on its next tick; 0 once all water has settled. */
   fluidActive: number;

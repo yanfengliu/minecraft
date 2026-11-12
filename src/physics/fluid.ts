@@ -6,14 +6,22 @@
 // out of the active set. Sources (lake, sea, river) are never changed: they
 // top up open neighbours and swallow what falls onto them.
 //
+// Water that would only run from one source straight into another is not
+// simulated at all (see `stays` in leveling.ts): a river steps down from reach
+// to reach, and if each step poured for real it would churn for ever. So a
+// source standing over a lower one is at rest, like everything else that has
+// settled.
+//
 // Volume is exact. Every unit that appears or disappears is counted in
-// `created`, `absorbed`, `evaporated` or `lost`; nothing else changes the total.
+// `poured`, `created`, `absorbed`, `evaporated` or `lost`; nothing else changes
+// the total, whoever writes to the grid: water that anyone else's block takes
+// the place of is pushed aside, not deleted (see `edited`).
 
 import { hash3i } from '../core/rng';
 import { B, REPLACEABLE, SOLID, WATER_LEVEL, WATER_SOURCE } from '../world/blocks';
 import type { World } from '../world/world';
 import { CellCounts, CellSet } from './cellset';
-import { DX, DZ, PressureSearch, share, waterFlow } from './leveling';
+import { DX, DZ, FALL, PressureSearch, share, stays, waterFlow } from './leveling';
 import type { EmitEvent } from './types';
 
 export { RIVER_SPEED } from './leveling';
@@ -51,13 +59,15 @@ const OFF = [1, 32, -1, -32];
 const WORDS = 1024;
 
 export class Fluid {
+  /** Units that came in from outside: through `addWater`, or by anyone else writing water into the grid. */
+  poured = 0;
   /** Units of finite water made by sources. */
   created = 0;
   /** Units swallowed by sources, including finite cells that healed into sources. */
   absorbed = 0;
   /** Units lost to evaporation. */
   evaporated = 0;
-  /** Units destroyed because a block landed in water with nowhere to push it. */
+  /** Units destroyed because something was put where they were and there was nowhere to push them. */
   lost = 0;
   /** Ticks run so far. */
   ticks = 0;
@@ -75,6 +85,7 @@ export class Fluid {
    */
   private readonly received: CellCounts;
   private readonly pressure: PressureSearch;
+  private readonly staying = (x: number, y: number, z: number): boolean => stays(this.world, x, y, z);
   private searches = 0;
   /** Cells that are thin films waiting to dry, with the tick each is due; the wheel holds the same cells by due tick. */
   private readonly films = new Map<number, number>();
@@ -121,46 +132,34 @@ export class Fluid {
   }
 
   /**
-   * Add finite water to a cell from outside the simulation (a bucket, rain).
-   * Returns the units that fitted; water poured into a source is swallowed and
-   * counts as fitted.
+   * Add finite water to a cell from outside the simulation (a bucket, rain),
+   * in whole sixteenths. Returns the units that fitted; water poured into a
+   * source is swallowed and counts as fitted.
    */
   addWater(x: number, y: number, z: number, units: number): number {
-    const w = this.world;
-    if (units <= 0 || !w.inBounds(x, y, z)) return 0;
-    const s = w.get(x, y, z);
-    if (SOURCE[s]) return units;
-    const level = LEVEL[s] as number;
-    if (level === 0 && !OPEN[s]) return 0;
-    const add = Math.min(units, 16 - level);
-    if (add <= 0) return 0;
-    const was = this.busy;
-    this.busy = true;
-    this.setLevel(x, y, z, level + add, s);
-    this.busy = was;
-    return add;
+    const fitted = this.put(x, y, z, Math.floor(units));
+    this.poured += fitted;
+    return fitted;
   }
 
   /**
-   * A block is about to take the place of the finite water in this cell: push
-   * that water up the column so it is not destroyed. Whatever cannot be placed
-   * within a few cells is counted in `lost`.
+   * Somebody other than the fluid wrote `state` over `old` in this cell. That
+   * never destroys finite water: what a block (or anything else) took the
+   * place of is pushed into the cells beside it or up the column, and only
+   * what fits nowhere is counted in `lost`. Water the edit brought with it is
+   * counted in `poured`. Either way the cell and its neighbours are looked at
+   * on the next tick.
    */
-  displace(x: number, y: number, z: number): void {
-    const w = this.world;
-    const s = w.get(x, y, z);
-    let units = SOURCE[s] ? 0 : (LEVEL[s] as number);
-    for (let yy = y + 1; units > 0 && yy < Math.min(w.sy, y + 33); yy++) {
-      const a = w.get(x, yy, z);
-      if (SOURCE[a]) {
-        this.absorbed += units;
-        units = 0;
-        break;
-      }
-      if (LEVEL[a] === 0 && !OPEN[a]) break;
-      units -= this.addWater(x, yy, z, units);
+  edited(x: number, y: number, z: number, old: number, state: number): void {
+    const had = SOURCE[old] ? 0 : (LEVEL[old] as number);
+    const has = SOURCE[state] ? 0 : (LEVEL[state] as number);
+    if (has > had) this.poured += has - had;
+    else if (had > has) {
+      if (SOURCE[state]) this.absorbed += had;
+      else this.push(x, y, z, had - has);
     }
-    this.lost += units;
+    this.next.addAround(x, y, z);
+    if (FALL[old] !== FALL[state]) this.wakeAbove(x, y, z);
   }
 
   /** Horizontal water velocity at a cell, in metres per second, written into `out`. */
@@ -219,6 +218,46 @@ export class Fluid {
 
   // -------------------------------------------------------------------------
 
+  /** Put up to `units` into a cell and return what fitted. A source swallows all of it; a cell that cannot hold water takes none. */
+  private put(x: number, y: number, z: number, units: number): number {
+    const w = this.world;
+    if (!(units > 0) || !w.inBounds(x, y, z)) return 0;
+    const s = w.get(x, y, z);
+    if (SOURCE[s]) {
+      this.absorbed += units;
+      return units;
+    }
+    const level = LEVEL[s] as number;
+    if (level === 0 && !OPEN[s]) return 0;
+    const add = Math.min(units, 16 - level);
+    if (add <= 0) return 0;
+    const was = this.busy;
+    this.busy = true;
+    this.setLevel(x, y, z, level + add, s);
+    this.busy = was;
+    return add;
+  }
+
+  /**
+   * Find room for water that has lost its cell: in the cells beside it, where
+   * a puddle would be squeezed to, and then up the column through water that
+   * is already full, as a block sinking into a pool raises it.
+   */
+  private push(x: number, y: number, z: number, units: number): void {
+    const w = this.world;
+    const r = (x * 3 + z * 5 + this.ticks) & 3;
+    for (let k = 0; k < 4 && units > 0; k++) {
+      const i = (r + k) & 3;
+      units -= this.put(x + (NX[i] as number), y, z + (NZ[i] as number), units);
+    }
+    for (let yy = y + 1; units > 0 && yy < Math.min(w.sy, y + 33); yy++) {
+      const a = w.get(x, yy, z);
+      if (LEVEL[a] === 0 && !OPEN[a]) break;
+      units -= this.put(x, yy, z, units);
+    }
+    this.lost += units;
+  }
+
   /** Write a finite level (0 is air). `old` is the state being replaced, so a plant in the way is reported. */
   private setLevel(x: number, y: number, z: number, level: number, old: number = AIR): void {
     if (old !== AIR && LEVEL[old] === 0) this.emit({ type: 'burst', x: x + 0.5, y: y + 0.5, z: z + 0.5, state: old });
@@ -276,9 +315,9 @@ export class Fluid {
     // 1. Down, as much as fits.
     let below = has && ly > 0 ? (arr[idx - 1024] as number) : w.get(x, y - 1, z);
     if (SOURCE[below]) {
-      // Water lying on a lake is swallowed, unless it is in the lake's own
-      // layer (a source beside it): then it is a hole in the lake filling up.
-      if (sources === 0) {
+      // Water lying on a lake is swallowed, unless two sources hold it in the
+      // lake's own layer: then it is a hole in the lake filling up.
+      if (sources < 2) {
         this.absorbed += level;
         level = 0;
       }
@@ -294,6 +333,15 @@ export class Fluid {
     if (level === 0) {
       this.setLevel(x, y, z, 0, s);
       return;
+    }
+    if (sources > 0) {
+      // A source beside it tops this cell up. What it holds does not run on to where another source would
+      // swallow it (see `stays`): passed on like that, a source would be feeding a source through it for ever.
+      // So a hole in a lake fills and heals instead of draining over the lake's lower layer, and a cell
+      // reopened at the lip of a river step stands full.
+      for (let i = 0; i < 4; i++) {
+        if (nOpen[i] === 1 && !stays(w, x + (NX[i] as number), y, z + (NZ[i] as number))) nOpen[i] = 0;
+      }
     }
 
     // 2. Sideways: only the water that was here before this tick's arrivals.
@@ -320,7 +368,7 @@ export class Fluid {
         over = true;
       }
       // ...or through connected water to somewhere lower, if this is the surface.
-      if (!over && LEVEL[above] === 0) level -= this.seek(x, y, z, level, below);
+      if (!over && LEVEL[above] === 0) level -= this.seek(x, y, z, level, below, sources > 0);
     }
     for (let i = 0; i < 4; i++) {
       if ((nGive[i] as number) === 0) continue;
@@ -345,6 +393,7 @@ export class Fluid {
       this.absorbed += 16;
       w.set(x, y, z, heal);
       this.next.addAround(x, y, z);
+      this.wakeAbove(x, y, z);
       return;
     }
     if (level !== start) this.setLevel(x, y, z, level);
@@ -359,8 +408,11 @@ export class Fluid {
     } else if (start === 1 && this.films.size > 0) this.films.delete(key);
   }
 
-  /** Send water from a stalled surface cell to a lower cell it is connected to under pressure. Returns the units sent. */
-  private seek(x: number, y: number, z: number, level: number, below: number): number {
+  /**
+   * Send water from a stalled surface cell to a lower cell it is connected to under pressure. Returns the
+   * units sent. `fed` is true for a cell with a source beside it, whose water goes nowhere it would not stay.
+   */
+  private seek(x: number, y: number, z: number, level: number, below: number, fed: boolean): number {
     if (!PressureSearch.canStart(level, below, this.nState, this.nOpen)) return 0;
     if (this.searches >= this.searchesPerTick) {
       // Out of search budget this tick: stay awake and try again.
@@ -369,7 +421,7 @@ export class Fluid {
     }
     this.searches++;
     const p = this.pressure;
-    if (!p.find(x, y, z, level, below, this.nState, this.nOpen)) return 0;
+    if (!p.find(x, y, z, level, below, this.nState, this.nOpen, fed ? this.staying : null)) return 0;
     const there = LEVEL[p.tState] as number;
     // With a block or more of head behind it water moves faster.
     const sent = p.ty < y ? Math.min(level, 16 - there, 4) : 1;
@@ -396,10 +448,31 @@ export class Fluid {
       const ns = w.get(nx, y, nz);
       const nl = LEVEL[ns] as number;
       if (SOURCE[ns] || nl >= 16 || (nl === 0 && !OPEN[ns])) continue;
+      // Nothing is given where it would only run back into a source: a lip over lower water stays at rest.
+      if (!stays(w, nx, y, nz)) continue;
       const give = Math.min(this.sourceRate, 16 - nl);
       this.created += give;
       this.setLevel(nx, y, nz, nl + give, ns);
       this.received.add(nx, y, nz, give);
+    }
+  }
+
+  /**
+   * What falling water would meet in this cell has changed (a floor laid or
+   * taken away, a source made or stopped up). Whether water `stays` in the
+   * open cells above it may have changed with that, so the sources that look
+   * out over them are looked at again: a lip that stood at rest over lower
+   * water has to start pouring when a ledge is built under it, and a hole in
+   * a lake has to go on filling once the layer beneath has healed.
+   */
+  private wakeAbove(x: number, y: number, z: number): void {
+    const w = this.world;
+    for (let yy = y + 1; yy < w.sy && FALL[w.get(x, yy, z)] === 0; yy++) {
+      for (let i = 0; i < 4; i++) {
+        const nx = x + (NX[i] as number);
+        const nz = z + (NZ[i] as number);
+        if (SOURCE[w.get(nx, yy, nz)]) this.next.add(nx, yy, nz);
+      }
     }
   }
 

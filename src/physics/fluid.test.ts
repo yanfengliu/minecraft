@@ -10,9 +10,9 @@ const GROUND = 31;
 function setup(world: World, opts: FluidOptions = {}): { fluid: Fluid; events: PhysicsEvent[] } {
   const events: PhysicsEvent[] = [];
   const fluid = new Fluid(world, (e) => events.push(e), opts);
-  // What the facade does: edits by anyone else wake the fluid.
+  // What the facade does: the fluid is told of every edit by anyone else.
   world.changed.on((c) => {
-    if (!fluid.busy) fluid.wake(c.x, c.y, c.z);
+    if (!fluid.busy) fluid.edited(c.x, c.y, c.z, c.old, c.state);
   });
   return { fluid, events };
 }
@@ -203,6 +203,55 @@ describe('fluid', () => {
     expect(fluid.absorbed - before).toBe(9);
     expect(totalUnits(world)).toBe(16);
     expect(world.get(24, GROUND + 1, 24)).toBe(B.air);
+  });
+
+  it('moves water aside when anything is put where it stands, and loses none', () => {
+    const world = createFlatWorld(64, 64, GROUND);
+    const { fluid, events } = setup(world);
+    const inWorld = (): number => fluid.poured + fluid.created - fluid.absorbed - fluid.evaporated - fluid.lost;
+    // A walled pool 6 x 6, a block and a half deep.
+    basin(world, 20, 20, 25, 25, 3);
+    fill(world, 20, GROUND + 1, 20, 25, GROUND + 1, 25, waterState(16));
+    fill(world, 20, GROUND + 2, 20, 25, GROUND + 2, 25, waterState(8));
+    const poured = 36 * 24;
+    settle(fluid, 200);
+    expect(fluid.poured).toBe(poured);
+    expect(totalUnits(world)).toBe(poured);
+
+    // What the player's block, a villager's seed and a growing trunk all do: write straight into a cell that holds water.
+    world.set(22, GROUND + 1, 22, B.stone); // a full cell on the bottom, with water over it
+    expect(totalUnits(world)).toBe(poured);
+    world.set(23, GROUND + 2, 23, B.oak_log); // a half-full cell at the surface
+    world.set(21, GROUND + 2, 24, B.wheat); // not solid, but nothing water can share a cell with
+    world.set(24, GROUND + 2, 21, B.oak_sapling); // a plant: the water comes back and washes it out
+    world.set(20, GROUND + 2, 20, B.air); // and nobody empties a cell by writing air into it
+    expect(totalUnits(world)).toBe(poured);
+    settle(fluid, 500);
+    expect(fluid.activeCount).toBe(0);
+    expect(totalUnits(world)).toBe(poured);
+    expect(fluid.lost + fluid.created + fluid.absorbed).toBe(0);
+    expect(world.get(22, GROUND + 1, 22)).toBe(B.stone);
+    expect(world.get(23, GROUND + 2, 23)).toBe(B.oak_log);
+    expect(world.get(21, GROUND + 2, 24)).toBe(B.wheat);
+    expect(WATER_LEVEL[world.get(24, GROUND + 2, 21)]).toBeGreaterThan(0);
+    expect(events.some((e) => e.type === 'burst' && e.state === B.oak_sapling)).toBe(true);
+    // The same water in less room: the pool stands higher than the 24 units a column it did.
+    let highest = 0;
+    for (let z = 20; z <= 25; z++) for (let x = 20; x <= 25; x++) highest = Math.max(highest, columnUnits(world, x, z, GROUND + 1, GROUND + 3));
+    expect(highest).toBeGreaterThan(24);
+
+    // Shut in on every side there is nowhere to push it: that, and only that, is counted as lost.
+    world.set(40, GROUND, 40, B.air);
+    world.set(40, GROUND, 40, waterState(11));
+    world.set(40, GROUND + 1, 40, B.stone);
+    world.set(40, GROUND, 40, B.stone);
+    expect(fluid.lost).toBe(11);
+    expect(totalUnits(world)).toBe(poured);
+    // Poured into a lake it is swallowed, and the books say so.
+    world.setRaw(50, GROUND, 50, B.water_source);
+    expect(fluid.addWater(50, GROUND, 50, 7)).toBe(7);
+    expect(fluid.absorbed).toBe(7);
+    expect(totalUnits(world)).toBe(inWorld());
   });
 
   it('dries up a lone thin film but leaves a puddle alone', () => {

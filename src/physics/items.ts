@@ -90,15 +90,15 @@ export function collectItems(sys: RigidBodies, x: number, y: number, z: number, 
   return [...got.entries()].sort((a, b) => a[0] - b[0]).map(([item, count]) => ({ item, count }));
 }
 
-/** Items past their lifetime vanish, and so do the oldest when there are too many. */
+/** Items past their lifetime vanish, and so do the oldest when there are too many. Both are counted as gone. */
 export function despawnOldItems(sys: RigidBodies): void {
   let live = 0;
   for (const b of sys.bodies) {
     if (b.dead || b.kind !== 'item') continue;
-    if (b.age >= sys.itemLifetime) sys.remove(b);
+    if (b.age >= sys.itemLifetime) sys.forget(b);
     else live++;
   }
   if (live <= sys.maxItems) return;
   const oldest = sys.bodies.filter((b) => b.kind === 'item' && !b.dead).sort((a, b) => a.born - b.born);
-  for (let i = 0; i < live - sys.maxItems; i++) sys.remove(oldest[i] as Body);
+  for (let i = 0; i < live - sys.maxItems; i++) sys.forget(oldest[i] as Body);
 }

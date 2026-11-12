@@ -241,6 +241,47 @@ describe('rigid bodies', () => {
     physics.dispose();
   });
 
+  it('shoves at the player\'s own speed whatever the frame rate', async () => {
+    const speed = 3;
+    const rested: number[] = [];
+    const report: string[] = [];
+    for (const fps of [20, 30, 60, 90, 144, 240]) {
+      const { physics } = await setup({ settleTime: NEVER });
+      const rock = view(physics, physics.spawnBlock(B.stone, 20.5, TOP + 0.5, 24.5));
+      run(physics, 1);
+      const body = (physics as unknown as { rigid: { bodies: { vx: number }[] } }).rigid.bodies[0] as { vx: number };
+      // Walk 6 m at 3 m/s straight through where the rock lies, one report and one step per frame. The
+      // player's own motion advances in steps of 1/120 s, as it does in the game, so at most frame rates
+      // a frame's move is a step more or less than its share.
+      const dt = 1 / fps;
+      let px = 17.5;
+      let debt = 0;
+      let fastest = 0;
+      for (let i = 0; i < 2 * fps; i++) {
+        debt += dt;
+        const steps = Math.floor(debt * 120 + 1e-6);
+        debt -= steps / 120;
+        px += (steps * speed) / 120;
+        physics.setPusher(px, TOP, 24.5, 0.3, 1.8);
+        physics.step(dt);
+        fastest = Math.max(fastest, body.vx);
+      }
+      // Kept ahead of the player, not walked through...
+      expect(rock.x - 0.5, `rock ahead of the player at ${fps} frames a second`).toBeGreaterThan(px + 0.2);
+      // ...and pushed about as fast as they walk, not flung.
+      expect(fastest, `fastest the rock went at ${fps} frames a second`).toBeGreaterThan(speed);
+      expect(fastest, `fastest the rock went at ${fps} frames a second`).toBeLessThan(speed + 1.2);
+      run(physics, 2);
+      rested.push(rock.x);
+      report.push(`${fps} Hz: top speed ${fastest.toFixed(2)} m/s, came to rest at x = ${rock.x.toFixed(2)}`);
+      physics.dispose();
+    }
+    console.log(`rigid push by frame rate, walking at ${speed} m/s: ${report.join('; ')}`);
+    // The same walk leaves the rock in much the same place: within the metre it slides after its last shove,
+    // which depends on how long before the walk ended that shove came.
+    expect(Math.max(...rested) - Math.min(...rested)).toBeLessThan(0.8);
+  });
+
   it('steps two hundred awake bodies in under 4 ms', async () => {
     const times: number[] = [];
     const scenario = async (measure: boolean): Promise<void> => {
