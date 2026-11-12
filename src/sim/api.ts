@@ -101,7 +101,8 @@ export interface WorldActions {
   /**
    * Fell the tree whose trunk contains this log cell. Returns the number of log
    * blocks it yields (0 if the cell is not part of a tree). The headless default
-   * removes the tree at once; the game replaces it with a physical collapse.
+   * removes the tree at once, and the game uses that default too, adding leaves
+   * and dust in the air: a villager's tree does not topple as the player's does.
    */
   fellTree(x: number, y: number, z: number): number;
   /** A purely visual or audible cue: 'smoke', 'sparks', 'splash', 'dust', 'chop', 'hammer', 'feathers'. Safe to ignore. */
