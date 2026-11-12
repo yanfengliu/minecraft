@@ -45,6 +45,12 @@ export interface RenderSettings {
   viewDistance: number;
   shadowDistance: number;
   shadowResolution: number;
+  /**
+   * The widest vertical field of view the camera will use, in radians. The shadow cascades are sized
+   * for it, so that a field of view which changes in play (it widens for a sprint) does not rescale
+   * them frame by frame. Keep it at or above the widest `Camera.fov` the game sets.
+   */
+  widestFov: number;
   ssao: boolean;
   /** Light shafts through the air. */
   shafts: boolean;
@@ -57,6 +63,8 @@ export const DEFAULT_SETTINGS: RenderSettings = {
   viewDistance: 640,
   shadowDistance: 220,
   shadowResolution: 2048,
+  // 72 degrees at rest and 6 more at a full sprint: what game.ts gives the camera.
+  widestFov: (78 * Math.PI) / 180,
   ssao: true,
   shafts: true,
   bloom: true,
@@ -174,7 +182,7 @@ export class Renderer {
     this.settings = { ...settings };
     this.frame = new FrameUniforms(gl);
     this.sections = new SectionStore(gl, world);
-    this.shadows = new ShadowCascades(gl, this.settings.shadowResolution, this.settings.shadowDistance);
+    this.shadows = new ShadowCascades(gl, this.settings.shadowResolution, this.settings.shadowDistance, this.settings.widestFov);
 
     const set = buildTileSet();
     this.tileSet = set;

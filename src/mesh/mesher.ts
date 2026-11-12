@@ -48,11 +48,14 @@ export interface MeshOutput {
 const TILES = new Uint16Array(STATE_COUNT * 6);
 const UVROT = new Uint8Array(STATE_COUNT);
 const AO_SOLID = new Uint8Array(STATE_COUNT);
+/** 1 for a state whose cell holds no light of its own: a solid cube, and equally a slab, stair or path. */
+const NO_LIGHT = new Uint8Array(STATE_COUNT);
 for (const s of BLOCKS) {
   for (let f = 0; f < 6; f++) TILES[s.id * 6 + f] = s.tiles[f] as number;
   UVROT[s.id] = s.uvRot;
   // Foliage darkens the corners it crowds, like any wall, so the inside of a canopy reads as shade.
   AO_SOLID[s.id] = s.opaque || IS_LEAVES[s.id] ? 1 : 0;
+  NO_LIGHT[s.id] = (LIGHT_OPACITY[s.id] as number) >= 15 ? 1 : 0;
 }
 
 // Face geometry: for each face, the unit vectors along which the quad's corners run.
@@ -163,7 +166,29 @@ function ambientLight(states: Uint16Array, light: Uint8Array, idx: number): numb
   let blk = 0;
   for (let f = 0; f < 6; f++) {
     const n = idx + (OFF_N[f] as number);
-    if ((LIGHT_OPACITY[states[n] as number] as number) >= 15) continue;
+    if (NO_LIGHT[states[n] as number]) continue;
+    const l = light[n] as number;
+    if (l >> 4 > sky) sky = l >> 4;
+    if ((l & 15) > blk) blk = l & 15;
+  }
+  return (sky << 4) | blk;
+}
+
+/**
+ * The light that falls on a face looking into cell `c`. Normally that is the light the cell holds. A
+ * slab, stair or path there holds none, being light-tight, and yet leaves the face in view: the face
+ * then takes the brightest light beside that cell, as such a block's own faces do. Only the four
+ * cells in the face's plane (`ou` and `ov` step along it) are asked, because a face on the edge of a
+ * section looks into the copied border, and nothing beyond that was copied.
+ */
+function lightInto(states: Uint16Array, light: Uint8Array, c: number, ou: number, ov: number): number {
+  const s = states[c] as number;
+  if (!NO_LIGHT[s] || OPAQUE[s]) return light[c] as number;
+  let sky = 0;
+  let blk = 0;
+  for (let k = 0; k < 4; k++) {
+    const n = c + (k === 0 ? ou : k === 1 ? -ou : k === 2 ? ov : -ov);
+    if (NO_LIGHT[states[n] as number]) continue;
     const l = light[n] as number;
     if (l >> 4 > sky) sky = l >> 4;
     if ((l & 15) > blk) blk = l & 15;
@@ -182,7 +207,7 @@ function shadeFace(states: Uint16Array, light: Uint8Array, idx: number, f: numbe
   const c = idx + (OFF_N[f] as number);
   const ou = OFF_U[f] as number;
   const ov = OFF_V[f] as number;
-  const lc = light[c] as number;
+  const lc = lightInto(states, light, c, ou, ov);
   for (let k = 0; k < 4; k++) {
     const su = k === 1 || k === 2 ? ou : -ou;
     const sv = k >= 2 ? ov : -ov;
@@ -199,10 +224,13 @@ function shadeFace(states: Uint16Array, light: Uint8Array, idx: number, f: numbe
     let sky = lc >> 4;
     let blk = lc & 15;
     let count = 1;
-    if (!OPAQUE[s1]) { const l = light[i1] as number; sky += l >> 4; blk += l & 15; count++; }
-    if (!OPAQUE[s2]) { const l = light[i2] as number; sky += l >> 4; blk += l & 15; count++; }
+    // A corner is lit by the cells round it that hold light. One that holds none has none to lend,
+    // whether it is solid or a path at the foot of the wall: averaging its zero in would darken the
+    // face beside every slab, stair and path.
+    if (!NO_LIGHT[s1]) { const l = light[i1] as number; sky += l >> 4; blk += l & 15; count++; }
+    if (!NO_LIGHT[s2]) { const l = light[i2] as number; sky += l >> 4; blk += l & 15; count++; }
     // Light does not reach a corner cell walled off by both sides.
-    if (!OPAQUE[s3] && !(OPAQUE[s1] && OPAQUE[s2])) { const l = light[i3] as number; sky += l >> 4; blk += l & 15; count++; }
+    if (!NO_LIGHT[s3] && !(OPAQUE[s1] && OPAQUE[s2])) { const l = light[i3] as number; sky += l >> 4; blk += l & 15; count++; }
     sky4[k] = Math.round((sky * 2) / count);
     blk4[k] = Math.round((blk * 2) / count);
   }
@@ -215,7 +243,7 @@ function emitBoxes(
 ): void {
   // A block that lets light through is lit by its own cell. One that does not (a stair, a slab) holds
   // no light itself, so each face borrows from the cell it looks into, or from the brightest side.
-  const lightTight = (LIGHT_OPACITY[state] as number) >= 15;
+  const lightTight = NO_LIGHT[state] === 1;
   const own = light[idx] as number;
   const ambient = lightTight ? ambientLight(states, light, idx) : own;
   for (const b of boxes) {
@@ -238,7 +266,7 @@ function emitBoxes(
         if ((FULL_FACES[n] as number) & (1 << (f ^ 1))) continue;
         // ...or by an identical neighbour, when this box runs right across the cell so both ends match.
         if (n === state && lo === 0 && hi >= 16) continue;
-        if (lightTight && (LIGHT_OPACITY[n] as number) < 15) faceLight = light[nIdx] as number;
+        if (lightTight && !NO_LIGHT[n]) faceLight = light[nIdx] as number;
       }
       setFlat(faceLight);
       const tile = b.tiles ? (b.tiles[f] as number) : (TILES[state * 6 + f] as number);
@@ -425,8 +453,9 @@ function emitLiquid(states: Uint16Array, light: Uint8Array, idx: number, state: 
   const waterBit = 0x80000000;
   ao4[0] = ao4[1] = ao4[2] = ao4[3] = 3;
 
+  // Face `f` of the water is lit by the cell it looks into, `li` (see lightInto: water under a low bridge of slabs is not black).
   const lightWord = (li: number, f: number): number => {
-    const l = light[li] as number;
+    const l = lightInto(states, light, li, OFF_U[f] as number, OFF_V[f] as number);
     return (f | ((l >> 4) * 2 << 13) | ((l & 15) * 2 << 18) | flowBits | waterBit) >>> 0;
   };
 

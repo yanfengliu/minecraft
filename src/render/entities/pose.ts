@@ -12,7 +12,12 @@ export const CHANNEL_INDEX = new Map<Channel, number>(CHANNELS.map((c, i) => [c,
 export interface Pose {
   /** Euler angles (x, y, z) per channel, in CHANNELS order. */
   rot: Float32Array;
-  /** Whole-body adjustments: raise, slide forward, tip back, roll over, turn (all in metres or radians). */
+  /**
+   * Whole-body adjustments: raise and slide forward, then tip back, roll over and turn (radians).
+   * `lift` and `shift` are in the model's own metres, those of a creature of scale 1, like the sizes
+   * of its boxes: whoever places the creature scales them with it, so that a child sits on a stool
+   * and lies on a bed as an adult does and not half a metre lower or further along.
+   */
   lift: number;
   shift: number;
   pitch: number;
@@ -42,7 +47,8 @@ const WING_R = I('wingR');
 
 /**
  * Fill `out` for one creature. `t` is its animation clock in seconds, `seed`
- * staggers idle motion between individuals, `legs` is the model's leg length in metres.
+ * staggers idle motion between individuals, `legs` is the model's leg length
+ * in metres at scale 1.
  */
 export function computePose(kind: EntityKind, anim: AnimState, t: number, seed: number, legs: number, out: Pose): void {
   const r = out.rot;
@@ -91,10 +97,12 @@ export function computePose(kind: EntityKind, anim: AnimState, t: number, seed: 
         out.lift = -0.5;
         break;
       case 'sleep':
-        // Flat on the back.
+        // Flat on the back, lying from where the feet are toward where the sleeper faces: the village
+        // puts the feet near the foot of the bed and the heading toward the pillow. Tipping back lays
+        // the head behind the feet, so the body is turned about first.
+        out.turn = Math.PI;
         out.pitch = -Math.PI / 2;
         out.lift = 0.17;
-        out.shift = 0.85;
         r[ARM_L + 2] = 0.08;
         r[ARM_R + 2] = -0.08;
         break;

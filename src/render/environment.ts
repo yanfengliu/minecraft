@@ -6,7 +6,7 @@ import { type Vec3, damp, lerp, saturate, smoothstep } from '../core/math';
 import type { Clock } from '../sim/clock';
 import { moonDirection, moonIllumination, sunDirection } from '../sim/sky';
 import type { WeatherView } from '../sim/weather';
-import { MOON_RATIO, SUN_INTENSITY, domeRadiance, transmittanceTo } from './atmosphere';
+import { AirLight, MOON_RATIO, SUN_INTENSITY } from './atmosphere';
 
 type Rgb3 = [number, number, number];
 
@@ -65,6 +65,15 @@ export class Environment {
   /** Brightness of a lightning flash right now, decaying. */
   flash = 0;
 
+  // The sun's and the moon's way through the air: integrated when the clock moves them, not every frame.
+  private readonly sunAir = new AirLight();
+  private readonly moonAir = new AirLight();
+
+  /** How many times the atmosphere has been integrated for a light: one for each body each time the clock has moved it. */
+  get skyIntegrations(): number {
+    return this.sunAir.integrations + this.moonAir.integrations;
+  }
+
   /**
    * `eyeSky` and `eyeBlock` are the voxel light levels (0..1) where the camera
    * is, which stand in for the eye adapting to a cave or to firelight.
@@ -79,12 +88,12 @@ export class Environment {
     // by the cloud shadows themselves; this is the part thin high cloud takes everywhere.
     const directThrough = 1 - 0.5 * cover * cover;
 
-    const sunT = transmittanceTo(sun);
+    const sunT = this.sunAir.toward(sun).through;
     const sunUp = smoothstep(-0.03, 0.02, sun.y);
     this.sunVisible = sunUp * (1 - smoothstep(0.75, 1, cover));
     this.moonLit = moonIllumination(clock);
     this.moonIntensity = SUN_INTENSITY * MOON_RATIO * this.moonLit;
-    const moonT = transmittanceTo(moon);
+    const moonT = this.moonAir.toward(moon).through;
     const moonUp = smoothstep(-0.03, 0.04, moon.y);
 
     // The sun is the key light until it is all but gone; then the moon, if it is up.
@@ -106,8 +115,8 @@ export class Environment {
     // Shadows fade out as their light grazes the horizon, which also hides the hand-over between sun and moon.
     this.shadowStrength = smoothstep(0.015, 0.1, body.y);
 
-    const domeSun = domeRadiance(sun);
-    const domeMoon = domeRadiance(moon);
+    const domeSun = this.sunAir.dome;
+    const domeMoon = this.moonAir.dome;
     let ar = (domeSun.x * SUN_INTENSITY + domeMoon.x * this.moonIntensity) * AMBIENT_BOOST;
     let ag = (domeSun.y * SUN_INTENSITY + domeMoon.y * this.moonIntensity) * AMBIENT_BOOST;
     let ab = (domeSun.z * SUN_INTENSITY + domeMoon.z * this.moonIntensity) * AMBIENT_BOOST;
