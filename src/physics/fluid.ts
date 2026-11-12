@@ -7,9 +7,10 @@
 // top up open neighbours and swallow what falls onto them.
 //
 // Water that would only run from one source straight into another is not
-// simulated at all (see `stays`): a river steps down from reach to reach, and
-// if each step poured for real it would churn for ever. So a source standing
-// over a lower one is at rest, like everything else that has settled.
+// simulated at all (see `stays` in leveling.ts): a river steps down from reach
+// to reach, and if each step poured for real it would churn for ever. So a
+// source standing over a lower one is at rest, like everything else that has
+// settled.
 //
 // Volume is exact. Every unit that appears or disappears is counted in
 // `poured`, `created`, `absorbed`, `evaporated` or `lost`; nothing else changes
@@ -20,7 +21,7 @@ import { hash3i } from '../core/rng';
 import { B, REPLACEABLE, SOLID, WATER_LEVEL, WATER_SOURCE } from '../world/blocks';
 import type { World } from '../world/world';
 import { CellCounts, CellSet } from './cellset';
-import { DX, DZ, PressureSearch, share, waterFlow } from './leveling';
+import { DX, DZ, FALL, PressureSearch, share, stays, waterFlow } from './leveling';
 import type { EmitEvent } from './types';
 
 export { RIVER_SPEED } from './leveling';
@@ -38,8 +39,6 @@ const LAKE = B.water_source;
 const RIVER = B.river;
 const NX = DX;
 const NZ = DZ;
-/** What falling water does on reaching a cell in this state: 0 passes on down, 1 lands (a floor, or water that is full), 2 is swallowed (a source). */
-const FALL = Uint8Array.from(WATER_LEVEL, (level, s) => (WATER_SOURCE[s] ? 2 : REPLACEABLE[s] && level < 16 ? 0 : 1));
 
 export interface FluidOptions {
   seed?: number;
@@ -86,7 +85,7 @@ export class Fluid {
    */
   private readonly received: CellCounts;
   private readonly pressure: PressureSearch;
-  private readonly staying = (x: number, y: number, z: number): boolean => this.stays(x, y, z);
+  private readonly staying = (x: number, y: number, z: number): boolean => stays(this.world, x, y, z);
   private searches = 0;
   /** Cells that are thin films waiting to dry, with the tick each is due; the wheel holds the same cells by due tick. */
   private readonly films = new Map<number, number>();
@@ -341,7 +340,7 @@ export class Fluid {
       // So a hole in a lake fills and heals instead of draining over the lake's lower layer, and a cell
       // reopened at the lip of a river step stands full.
       for (let i = 0; i < 4; i++) {
-        if (nOpen[i] === 1 && !this.stays(x + (NX[i] as number), y, z + (NZ[i] as number))) nOpen[i] = 0;
+        if (nOpen[i] === 1 && !stays(w, x + (NX[i] as number), y, z + (NZ[i] as number))) nOpen[i] = 0;
       }
     }
 
@@ -449,38 +448,13 @@ export class Fluid {
       const ns = w.get(nx, y, nz);
       const nl = LEVEL[ns] as number;
       if (SOURCE[ns] || nl >= 16 || (nl === 0 && !OPEN[ns])) continue;
-      if (!this.stays(nx, y, nz)) continue;
+      // Nothing is given where it would only run back into a source: a lip over lower water stays at rest.
+      if (!stays(w, nx, y, nz)) continue;
       const give = Math.min(this.sourceRate, 16 - nl);
       this.created += give;
       this.setLevel(nx, y, nz, nl + give, ns);
       this.received.add(nx, y, nz, give);
     }
-  }
-
-  /**
-   * Would water put into this open cell stay in play? Not if it lies on a
-   * source, or over a clear drop onto one: it would go straight back into a
-   * source, and one body of water running into another is not simulated. That
-   * is every step in a river and every lake's outfall, and each would
-   * otherwise pour, be swallowed and be poured again for ever. The exception
-   * is a hole in a water body's own surface, lying on it and held by two
-   * sources: that is filled, and heals.
-   */
-  private stays(x: number, y: number, z: number): boolean {
-    const w = this.world;
-    let s = w.get(x, y - 1, z);
-    if (SOURCE[s]) {
-      let sources = 0;
-      for (let i = 0; i < 4; i++) sources += SOURCE[w.get(x + (NX[i] as number), y, z + (NZ[i] as number))] as number;
-      return sources >= 2;
-    }
-    // Down through air, plants and water with room in it. Below the world is bedrock, so this ends.
-    for (let yy = y - 2; FALL[s] === 0; yy--) {
-      s = w.get(x, yy, z);
-      if (SOURCE[s]) return false;
-    }
-    // A floor, or standing water that is full: it lands there.
-    return true;
   }
 
   /**

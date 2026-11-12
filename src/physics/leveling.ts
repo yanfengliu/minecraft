@@ -1,7 +1,7 @@
-// How water finds its level. Three pieces the fluid tick is built from: the
+// How water finds its level. The pieces the fluid tick is built from: the
 // split of a cell's water with its four neighbours, the search through
-// connected water for somewhere lower (pressure), and the current a body
-// feels in a cell.
+// connected water for somewhere lower (pressure), the rule for where water
+// from a source stays in play, and the current a body feels in a cell.
 
 import { B, REPLACEABLE, WATER_LEVEL, WATER_SOURCE } from '../world/blocks';
 import type { World } from '../world/world';
@@ -202,6 +202,34 @@ export class PressureSearch {
     }
     return false;
   }
+}
+
+/** What falling water does on reaching a cell in this state: 0 passes on down, 1 lands (a floor, or water that is full), 2 is swallowed (a source). */
+export const FALL = Uint8Array.from(WATER_LEVEL, (level, s) => (WATER_SOURCE[s] ? 2 : REPLACEABLE[s] && level < 16 ? 0 : 1));
+
+/**
+ * Would water put into this open cell stay in play? Not if it lies on a
+ * source, or over a clear drop onto one: it would go straight back into a
+ * source, and one body of water running into another is not simulated. That
+ * is every step in a river and every lake's outfall, and each would
+ * otherwise pour, be swallowed and be poured again for ever. The exception
+ * is a hole in a water body's own surface, lying on it and held by two
+ * sources: that is filled, and heals.
+ */
+export function stays(world: World, x: number, y: number, z: number): boolean {
+  let s = world.get(x, y - 1, z);
+  if (SOURCE[s]) {
+    let sources = 0;
+    for (let i = 0; i < 4; i++) sources += SOURCE[world.get(x + (DX[i] as number), y, z + (DZ[i] as number))] as number;
+    return sources >= 2;
+  }
+  // Down through air, plants and water with room in it. Below the world is bedrock, so this ends.
+  for (let yy = y - 2; FALL[s] === 0; yy--) {
+    s = world.get(x, yy, z);
+    if (SOURCE[s]) return false;
+  }
+  // A floor, or standing water that is full: it lands there.
+  return true;
 }
 
 /**
