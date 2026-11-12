@@ -159,7 +159,9 @@ export class Environment {
     // Brightness falls quickly once the sun is down: dusk at -6 degrees is already a fifth of day.
     const day = smoothstep(-0.22, 0.14, sun.y);
     const moonGlow = this.moonLit * moonUp * (1 - 0.7 * cover);
-    const aim = lerp(0.1 + 0.3 * moonGlow, 1.43, Math.pow(day, 1.8)) * (1 - 0.3 * cover * day);
+    // With no moon the land is dim, not gone: at half this aim, the hours between dusk and moonrise and
+    // every night of a new moon showed the lit windows of the village and nothing else.
+    const aim = lerp(0.2 + 0.2 * moonGlow, 1.43, Math.pow(day, 1.8)) * (1 - 0.3 * cover * day);
     let target = Math.min(Math.max(aim / Math.max(scene, 1e-5), 0.3), 300);
     // Out of the daylight (under trees, in a room, down a cave) the eye opens up, and it starts to as
     // soon as the sky is partly hidden: a forest floor at noon should not read as night.

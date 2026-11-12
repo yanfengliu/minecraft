@@ -1,5 +1,7 @@
 # Devlog Summary
 
+- 2026-11-11: **A night without a moon is dim, not black** — a last look at the merged game from the air at 19:40 showed lit windows and nothing else: between dusk and moonrise, and on every new-moon night, exposure aimed the land at a quarter of a moonlit night's brightness, which the tone curve crushed to black. Now half. The same look found the trade window unable to sell firewood after the under-one-coin rule; it now offers the smallest lot that sells.
+
 - 2026-11-11: **Four workers repaired the rest of the second reviewer's findings** — on every seed the river had been a gorge 27 deep through a slot of open air in the lake; a disturbed river step made about 3,000 block writes a tick for ever; a felling took the trees next door and the player's log walls; lighting read painted relief as the surface. A frame from the air went from 4.6 ms to **1.8**. Not repaired: collapse of pieces over 4096 blocks, recovery from a lost graphics context. See [the review record](../work/0_genesis/reviews/0_implementation.md).
 
 - 2026-11-11: **The second reviewer read everything and found 62 more; the session's own share is repaired** — flying down and forward was Control with W, which closes the browser's tab; the click that captures the mouse also struck the block ahead; light was re-flooded after edits that cannot change it; saplings grew into trees round people and through walls. The browser gate now fails any test that leaves an error on the page.
