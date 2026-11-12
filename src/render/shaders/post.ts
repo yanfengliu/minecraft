@@ -77,14 +77,25 @@ void main() {
 }
 `;
 
-/** Bloom downsample: 13 taps, with the first level weighted against single hot pixels. */
+/**
+ * Bloom downsample: 13 taps, with the first level weighted against single hot pixels.
+ *
+ * The first level also decides what glows, and judges it as the eye will see it: after exposure,
+ * which the composite applies later. Judged on the scene's own values, sunlit ground (bright in the
+ * scene, ordinary on screen once the day's low exposure is applied) fed the glow all day, and a flame
+ * on a dark night (dim in the scene, because authored light is scaled down to meet the night's high
+ * exposure) never reached the threshold at all.
+ */
 export const BLOOM_DOWN_FS = /* glsl */ `
+${FRAME_BLOCK}
 uniform sampler2D uSource;
 uniform vec2 uTexel;
 uniform float uFirst;
 in vec2 vUV;
 out vec4 oColor;
-float weightOf(vec3 c) { return 1.0 / (1.0 + max(c.r, max(c.g, c.b))); }
+// How bright a colour will be on screen, before the tone curve.
+float exposed(vec3 c) { return max(c.r, max(c.g, c.b)) * uClip.w; }
+float weightOf(vec3 c) { return 1.0 / (1.0 + exposed(c)); }
 void main() {
   vec3 a = texture(uSource, vUV + uTexel * vec2(-2.0, 2.0)).rgb;
   vec3 b = texture(uSource, vUV + uTexel * vec2(0.0, 2.0)).rgb;
@@ -112,9 +123,10 @@ void main() {
     float w3 = weightOf(g3) * 0.125;
     float w4 = weightOf(g4) * 0.125;
     color = (g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) / (w0 + w1 + w2 + w3 + w4);
-    // Only what is brighter than a lit surface feeds the glow.
-    float lum = max(color.r, max(color.g, color.b));
-    color *= smoothstep(0.9, 2.2, lum);
+    // Only what is brighter than a lit surface feeds the glow. On this scale a white wall in full sun
+    // comes to about 2.4 and the ground at the foot of a lamp to about 3.5, whatever the hour; a flame
+    // or a lantern's pane at night is near 20, and the sun's glitter on water far beyond that.
+    color *= smoothstep(3.0, 8.0, exposed(color));
   } else {
     color = e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
   }
