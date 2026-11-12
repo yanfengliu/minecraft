@@ -281,9 +281,9 @@ export class Routine {
       case GOAL_CARRY_HOME: carryHome(core, r); return;
       case GOAL_SHOP:
         if (shop(core, econ, r, 3)) return;
-        // Nothing worth going for after all, so the time is the resident's own, and it is spent as leisure, under
-        // that goal. Left under this one, whatever leisure keeps in the scratch fields (a drinker's count of
-        // sittings on a mug) would be read back at the next thought as an errand begun.
+        // Nothing worth going for after all, so the time is the resident's own, and it is spent as leisure under
+        // that goal: the scratch fields belong to one task at a time, and what leisure keeps in them is not to be
+        // read back at the next thought as an errand begun.
         r.home.shopDay = core.env.day;
         this.leave(r, GOAL_LEISURE);
         this.leisure(r);

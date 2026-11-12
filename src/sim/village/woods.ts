@@ -171,8 +171,8 @@ export function woodcutterWork(core: Core, econ: Economy, woods: Woods, r: Resid
   if ((r.haul || (r.targetId === 0 && r.packCount === 0)) && haul(core, econ, r)) return;
   if (outdoors) {
     // Fell only while the yard is short: counting what mates are already carrying or cutting, so three axes do not
-    // answer one need. (A mate is cutting only while at work like this one: off shopping or at the tavern, the same
-    // field holds a seller or a count of sittings.)
+    // answer one need. (A mate is cutting only while at work like this one: off on an errand, the same field
+    // holds the seller being walked to.)
     let coming = 0;
     for (const w of b.workers) coming += (w.pack[G.oak_log] as number) + (w !== r && w.goal === r.goal && w.targetId > 0 ? LOGS_PER_TREE : 0);
     const logs = (b.stock[G.oak_log] as number) + coming;
