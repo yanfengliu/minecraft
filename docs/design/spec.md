@@ -25,10 +25,10 @@ Visual target: blocky 16-pixel procedural textures under modern lighting — cas
 
 ## 2. Architecture
 
-Layers, lowest first. A layer may import only from layers above it in this list.
+Layers, lowest first. A layer may import only from layers above it in this list, types included; a lint rule holds every layer to that.
 
 - `src/core` — math, seeded random, noise, events.
-- `src/world` — block and item registries, voxel storage, light, walkability, generation.
+- `src/world` — block and item registries, voxel storage, light, walkability, generation, and the village plan with its validator (`plan.ts`: generation produces the plan, so it is defined below the simulations that read it).
 - `src/sim` — clock, sky, weather, the contracts (`api.ts`), the village (`village/`, `nav/`) and wildlife (`eco/`).
 - `src/physics` — fluid, loose blocks, structure, rigid bodies.
 - `src/mesh` — section meshing (runs in workers).
@@ -50,7 +50,7 @@ A cell holds one Uint16 block state id. `src/world/blocks.ts` defines every stat
 
 Light is two flood-filled 0..15 channels per cell (`src/world/light.ts`): sky visibility and block light. Incremental repair after an edit is held to exact agreement with a full recompute by property tests: edits scattered over rough ground, edits packed into one room so lamps of different strengths stand in each other's light, and edits in the world's top layers. An edit that changes neither how much light a block stops nor how much it gives off (a crop growing, a door swinging, soil wetted, water rising) is not repaired at all: the simulations make such edits all day.
 
-Water comes in three kinds. `water_source` is infinite still water: the sea and lakes. `river` (eight direction variants) is infinite water with a baked flow direction: river channels. `water` (sixteen variants, level 1..16 sixteenths) is finite water that moves and conserves volume; it appears when a source spills or something adds water. See section 8.
+Water comes in three kinds. `water_source` is infinite still water: the sea and lakes. `river` (eight direction variants) is infinite water with a baked flow direction: river channels. `water` (sixteen variants, level 1..16 sixteenths) is finite water that moves and conserves volume; it appears when a source spills or something adds water. See section 8. The one river leaves the lake through its rim at the lake's own level and comes down to the sea in single-block steps, its surface set from the ground as it lay before the channel was cut; no bank is lower than the water beside it, and where a lake stands well above the ground outside its rim the river drops that height in one ledge.
 
 Walkability has one definition, `standHeight` in `src/world/walk.ts`: feet cell and the cell above clear, and a walkable top beneath. That is a block in the cell below whose top is more than half a block up (a full block, and equally a path, farmland or a stair), or a low step of half a block or less (a slab) in the feet cell itself.
 
@@ -83,7 +83,7 @@ Looking at it: `scripts/capture.mjs` drives a headless browser on the GPU agains
 
 `Weather` (`src/sim/weather.ts`) is a Markov chain of regimes (clear, fair, overcast, rain, storm, fog) whose continuous state eases toward regime targets over a few game hours, so a change is watched, not switched. On still, clear nights it also lays a dawn mist that burns off within a few hours of sunrise. Simulations read it through `WeatherView`.
 
-`src/sim/api.ts` holds the contracts: `EntityView` (what the renderer draws; `hidden` marks a creature that is out of sight), `InspectInfo` (every bar reads "full is good"), `SimContext`, the cross-simulation services `WildlifeApi` and `LivestockApi`, `WorldActions`, and the `VillagePlan` with `validateVillagePlan`. World generation and every test fixture must produce a plan that validates.
+`src/sim/api.ts` holds the contracts: `EntityView` (what the renderer draws; `hidden` marks a creature that is out of sight), `InspectInfo` (every bar reads "full is good"), `SimContext`, the cross-simulation services `WildlifeApi` and `LivestockApi`, `WorldActions`, and the `VillagePlan` with `validateVillagePlan` (both defined in `src/world/plan.ts` and re-exported here). World generation and every test fixture must produce a plan that validates: `generateIsland` checks the plan it returns against the world it built and throws, naming what is wrong, if they do not match, so the game cannot start on a village whose door, bed or field is not where the plan says. The village tests generate seven islands (two full size, five 512 across, where lots have to shift most often).
 
 `src/life.ts` builds the one `SimContext` both simulations share in the game and ticks them each clock step: the wildlife first exists, then the village is given its `WildlifeApi`, and the wildlife the village's `LivestockApi` and its people. A frame runs at most 40 steps, so a time-lapse the simulations cannot keep up with slows time instead of the frame rate.
 
