@@ -492,6 +492,7 @@ export class Renderer {
       prog.tex('uSkyLut', 6, gl.TEXTURE_2D, this.skyLut.colors[0] as WebGLTexture);
       prog.tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
       prog.tex('uCloudNoise', 8, gl.TEXTURE_3D, this.cloudNoise);
+      prog.tex('uHeightTex', 9, gl.TEXTURE_2D, this.heightTex);
       gl.uniformMatrix4fv(prog.loc('uShadowMat'), false, this.shadows.matrices);
       prog.f4v('uShadowSplit', this.shadows.splits).f4v('uShadowTexel', this.shadows.texel).f('uShadowRes', this.shadows.res);
       if (prog === this.pOcean) {
@@ -542,9 +543,13 @@ export class Renderer {
     // --- light shafts -------------------------------------------------------
     if (this.settings.shafts && !info.underwater) {
       const volume = this.targets.volume;
+      // The shafts end at what the eye sees, and that includes water: the forward target's depth has
+      // it, the G-buffer's does not. Marched to the G-buffer's depth, a ray went on through the water
+      // to the bed, and the air over deep water glowed with mist that was not there.
+      const seen = forward.depth;
       bindTarget(gl, volume);
       const pv = this.pVolume.use();
-      pv.tex('uDepth', 0, gl.TEXTURE_2D, gbuffer.depth).tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
+      pv.tex('uDepth', 0, gl.TEXTURE_2D, seen).tex('uShadowMap', 7, gl.TEXTURE_2D_ARRAY, this.shadows.texture);
       pv.tex('uCloudNoise', 8, gl.TEXTURE_3D, this.cloudNoise);
       gl.uniformMatrix4fv(pv.loc('uShadowMat'), false, this.shadows.matrices);
       pv.f4v('uShadowSplit', this.shadows.splits).f4v('uShadowTexel', this.shadows.texel).f('uShadowRes', this.shadows.res);
@@ -552,7 +557,7 @@ export class Renderer {
       bindTarget(gl, hdr);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE);
-      this.pVolumeAdd.use().tex('uVolume', 0, gl.TEXTURE_2D, volume.colors[0] as WebGLTexture).tex('uDepth', 1, gl.TEXTURE_2D, gbuffer.depth)
+      this.pVolumeAdd.use().tex('uVolume', 0, gl.TEXTURE_2D, volume.colors[0] as WebGLTexture).tex('uDepth', 1, gl.TEXTURE_2D, seen)
         .f2('uTexel', 1 / volume.width, 1 / volume.height);
       drawFullscreen(gl);
       gl.disable(gl.BLEND);

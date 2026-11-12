@@ -66,6 +66,7 @@ ${CAUSTICS}
 uniform sampler2D uScene;
 uniform sampler2D uDepth;
 uniform sampler2DArray uTiles;
+uniform sampler2D uHeightTex;   // per column, the height below which rain cannot fall
 uniform float uGlassPass;   // 0 while water is being drawn, 1 while glass is
 
 in vec3 vWorld;
@@ -154,7 +155,11 @@ void main() {
     vec4 a = tileSample(uTiles, vUV, vLayer);
     if (!gl_FrontFacing) N = -N;
     float sky = vLight.x * vLight.x;
-    vec3 lit = uAmbientSky.rgb * sky + uLightColor.rgb * saturate(dot(N, uLightDir.xyz)) * 0.8;
+    float ndl = saturate(dot(N, uLightDir.xyz));
+    // The key light reaches a window only where it reaches the wall round it: through the same shadow
+    // maps and the same cloud shadow. Without them a pane under an eave or a cloud shone as in full sun.
+    float reach = ndl > 0.0 ? mix(1.0, keyShadow(vWorld, N, ndl, dist, gl_FragCoord.xy), uLightDir.w) * cloudShadow(vWorld) : 0.0;
+    vec3 lit = uAmbientSky.rgb * sky + uLightColor.rgb * ndl * reach * 0.8;
     // Lamplight behind a window makes the panes glow from outside.
     vec3 warm = vec3(1.0, 0.62, 0.28) * pow(vLight.y, 2.2) * 2.2 * uGrassTint.a;
     bool pane = a.a < 0.6;
@@ -195,7 +200,12 @@ void main() {
       // Squared by multiplying: pow of a negative base is undefined, and inside the ring this is negative.
       float off = (r - life * 0.42) * 9.0;
       float ring = sin((r - life * 0.42) * 46.0) * exp(-off * off) * (1.0 - life);
-      g += normalize(d + 1e-4) * ring * 0.55 * rain * step(hash12(cell + 3.7), rain * 1.4);
+      // A drop makes a ring only where it can land: the same map that stops the rain says whether
+      // anything stands over the water there, a roof or a bridge. It is asked where the drop falls, not
+      // at each pixel, so a ring begun in the open still spreads in under the edge of the cover.
+      float roof = texture(uHeightTex, centre / 1.6 / uWorld.xy).r * 255.0;
+      float lands = step(roof, vWorld.y + 0.5);
+      g += normalize(d + 1e-4) * ring * 0.55 * rain * step(hash12(cell + 3.7), rain * 1.4) * lands;
     }
     N = normalize(vec3(-g.x, 1.0, -g.y));
   } else {
