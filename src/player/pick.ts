@@ -34,8 +34,16 @@ export function pickCreature(seen: readonly EntityView[], eye: Point, look: Poin
     // Slab test against a box around the creature.
     let t0 = 0;
     let t1 = bestT;
-    const lo = [v.x - r, v.y, v.z - r];
-    const hi = [v.x + r, v.y + h, v.z + r];
+    let lo = [v.x - r, v.y, v.z - r];
+    let hi = [v.x + r, v.y + h, v.z + r];
+    if (v.anim === 'sleep' && (v.kind === 'villager' || v.kind === 'child')) {
+      // Asleep, a person lies from where their feet are toward where they face, and the box lies down with
+      // them: standing at the feet, it was the foot of the bed one had to aim at.
+      const hx = v.x + Math.sin(v.yaw) * h;
+      const hz = v.z + Math.cos(v.yaw) * h;
+      lo = [Math.min(v.x, hx) - r, v.y, Math.min(v.z, hz) - r];
+      hi = [Math.max(v.x, hx) + r, v.y + 0.5, Math.max(v.z, hz) + r];
+    }
     let hit = true;
     for (let a = 0; a < 3 && hit; a++) {
       if (Math.abs(d[a] as number) < 1e-9) {

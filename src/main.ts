@@ -117,6 +117,14 @@ async function boot(): Promise<void> {
     const info = gl.getExtension('WEBGL_debug_renderer_info');
     api.renderer = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
     api.webgl2 = true;
+    // The browser can take the graphics context away (a driver reset, too many pages drawing). Nothing can be
+    // drawn after that and nothing is saved, so stop and say so instead of leaving a frozen picture.
+    game.renderer.onContextLost = () => {
+      game.stop();
+      document.body.appendChild(overlay);
+      fail('The browser took the graphics context away, so nothing more can be drawn. The island is not saved: reload the page to start again.');
+    };
+    game.pool.onError = (e) => console.error(`a mesh worker failed: ${e.message}`);
     game.start();
     overlay.remove();
     api.ready = true;

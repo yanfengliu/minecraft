@@ -182,11 +182,14 @@ export class Game {
     const game = new Game(canvas, gen, world, physics);
     game.pool.queueAll();
     const total = game.world.sectionCount;
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
       const step = (): void => {
         game.pool.update(game.camera.x, game.camera.y, game.camera.z);
         progress('Shaping the land', 0.55 + 0.45 * (game.pool.completed / total));
-        if (game.pool.pending === 0) resolve();
+        // A mesh worker that would not load, or threw, leaves sections unbuilt: say so, where waiting for
+        // them to finish hung the loading screen for good.
+        if (game.pool.error) reject(new Error(`building the island's meshes failed: ${game.pool.error.message}`));
+        else if (game.pool.pending === 0) resolve();
         else setTimeout(step, 16);
       };
       step();

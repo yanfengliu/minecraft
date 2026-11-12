@@ -191,6 +191,28 @@ describe('looking at creatures', () => {
     expect(pickCreature([child], eye, toward(GROUND + CREATURE_HEIGHT.child * 0.68 + 0.25), 6.5)).toBeNull();
   });
 
+  it('finds a sleeper anywhere along the bed, not standing at its foot', () => {
+    // Asleep, facing +z: feet at z 14.5, head 1.8 m farther on.
+    const sleeper: EntityView = { ...creature('villager', 1), anim: 'sleep', yaw: 0 };
+    const eye = { x: 10.5, y: GROUND + 1.62, z: 12.5 };
+    const toward = (ty: number, tz: number): { x: number; y: number; z: number } => {
+      const d = Math.hypot(ty - eye.y, tz - eye.z);
+      return { x: 0, y: (ty - eye.y) / d, z: (tz - eye.z) / d };
+    };
+    expect(pickCreature([sleeper], eye, toward(GROUND + 0.25, 16.0), 6.5)).toBe(sleeper);
+    expect(pickCreature([sleeper], eye, toward(GROUND + 0.25, 14.7), 6.5)).toBe(sleeper);
+    // Nobody is standing at the foot of the bed.
+    expect(pickCreature([sleeper], eye, toward(GROUND + 1.5, 14.5), 6.5)).toBeNull();
+    // Awake and on their feet, the same person is found there, and not where the pillow would be: looked
+    // at from the side, level with the bed, a metre and a half up it from the feet.
+    const awake: EntityView = { ...sleeper, anim: 'idle' };
+    const beside = { x: 12.5, y: GROUND + 0.25, z: 16.0 };
+    const west = { x: -1, y: 0, z: 0 };
+    expect(pickCreature([awake], eye, toward(GROUND + 1.5, 14.5), 6.5)).toBe(awake);
+    expect(pickCreature([awake], beside, west, 6.5)).toBeNull();
+    expect(pickCreature([sleeper], beside, west, 6.5)).toBe(sleeper);
+  });
+
   it('does not reach past a nearer block, nor beyond its range', () => {
     const adult = creature('villager', 1);
     const eye = { x: 10.5, y: GROUND + 1.62, z: 10.5 };
