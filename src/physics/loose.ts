@@ -4,6 +4,11 @@
 // its angle of repose slides off sideways, so heaps settle at 45 degrees
 // instead of standing as towers. The grid is the truth: a falling block is
 // only the animation between two grid states.
+//
+// What holds a loose block up is something solid, and nothing else. It falls
+// through air, water and plants, and past a ladder or a torch on a wall; where
+// it comes to rest it takes the cell, and a torch, crop or other fitting that
+// stood there is knocked off as what it drops.
 
 import { hash3i } from '../core/rng';
 import { B, LOOSE, REPLACEABLE, SOLID, WATER_LEVEL } from '../world/blocks';
@@ -31,8 +36,6 @@ export interface LooseHost {
   nextId(): number;
   addView(view: BodyView): void;
   removeView(view: BodyView): void;
-  /** Called before a block replaces the water in a cell, so the water can be pushed aside. */
-  displace(x: number, y: number, z: number): void;
   /** True when something that must not be buried (the player) occupies the cell. */
   blocked(x: number, y: number, z: number): boolean;
   /** Turn a block that has nowhere to land into its item drop. */
@@ -95,7 +98,7 @@ export class LooseBlocks {
   /** A block changed. Queue whatever that may have set loose; nothing moves until `step`. */
   onBlockChanged(x: number, y: number, z: number, old: number, state: number): void {
     if (IS_LOOSE[state]) this.enqueue(x, y, z);
-    if (OPEN[state] && !OPEN[old]) {
+    if (HARD[old] ? !HARD[state] : OPEN[state] && !OPEN[old]) {
       // The cell stopped holding things up, stopped being in the way, and stopped weighing on what is under it.
       this.enqueue(x, y + 1, z);
       this.enqueue(x, y - 1, z);
@@ -150,7 +153,7 @@ export class LooseBlocks {
     const s = w.get(x, y, z);
     if (!IS_LOOSE[s] || y <= 0) return;
     const below = w.get(x, y - 1, z);
-    if (OPEN[below]) {
+    if (!HARD[below]) {
       this.release(x, y, z, s, 0, 0);
       return;
     }
@@ -163,7 +166,7 @@ export class LooseBlocks {
       const nx = x + (DX[i] as number);
       const nz = z + (DZ[i] as number);
       if (!w.inBounds(nx, y, nz)) continue;
-      if (OPEN[w.get(nx, y, nz)] && OPEN[w.get(nx, y - 1, nz)]) {
+      if (!HARD[w.get(nx, y, nz)] && !HARD[w.get(nx, y - 1, nz)]) {
         this.release(x, y, z, s, DX[i] as number, DZ[i] as number);
         return;
       }
@@ -178,7 +181,7 @@ export class LooseBlocks {
     if (this.falling.length >= this.maxFalling) {
       // Too many in the air to animate: put it straight where it would come to rest.
       let k = y - 1;
-      while (k >= 0 && OPEN[this.world.get(cx, k, cz)]) k--;
+      while (k >= 0 && !HARD[this.world.get(cx, k, cz)]) k--;
       this.land(state, cx, k + 1, cz);
       return;
     }
@@ -204,9 +207,9 @@ export class LooseBlocks {
       if (f.vy < -SINK_SPEED) f.vy = -SINK_SPEED;
     } else if (f.vy < -MAX_FALL) f.vy = -MAX_FALL;
     const target = f.y + f.vy * dt;
-    // Every cell the underside passes into must be free; the first that is not is what it lands on.
+    // Every cell the underside passes into must have nothing solid in it; the first that has is what it lands on.
     for (let k = Math.ceil(f.y) - 1; k >= Math.floor(target); k--) {
-      if (k >= 0 && OPEN[w.get(f.cx, k, f.cz)]) continue;
+      if (k >= 0 && !HARD[w.get(f.cx, k, f.cz)]) continue;
       this.host.removeView(f.view);
       this.land(f.state, f.cx, k + 1, f.cz);
       return true;
@@ -228,12 +231,16 @@ export class LooseBlocks {
     // here first: this one settles on top of it.
     for (let tries = 0; tries < 8 && IS_LOOSE[w.get(x, y, z)]; tries++) y++;
     const there = w.get(x, y, z);
-    if (!w.inBounds(x, y, z) || !OPEN[there] || this.host.blocked(x, y, z)) {
+    if (!w.inBounds(x, y, z) || HARD[there] || this.host.blocked(x, y, z)) {
       this.host.drop(state, x + 0.5, y + 0.5, z + 0.5);
       return;
     }
-    if (LEVEL[there] !== 0) this.host.displace(x, y, z);
-    else if (there !== AIR) this.host.emit({ type: 'burst', x: x + 0.5, y: y + 0.5, z: z + 0.5, state: there });
+    // Water in the cell is pushed aside by the fluid, which sees the write. A plant is crushed; a fitting
+    // comes off as what it drops, since nothing else will ever know it was there.
+    if (LEVEL[there] === 0 && there !== AIR) {
+      if (OPEN[there]) this.host.emit({ type: 'burst', x: x + 0.5, y: y + 0.5, z: z + 0.5, state: there });
+      else this.host.drop(there, x + 0.5, y + 0.5, z + 0.5);
+    }
     w.set(x, y, z, state);
     this.host.emit({ type: 'land', x: x + 0.5, y: y + 0.5, z: z + 0.5, state });
   }

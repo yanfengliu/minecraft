@@ -18,16 +18,22 @@ const AIR = B.air;
 const grid = new Int8Array(9);
 
 /**
- * Try to return a sleeping block or compound to the grid. Returns true when
- * it went (the body is gone), false when it has to stay a body: turned too far
- * from the grid's axes, too far from a cell centre, in the way of something,
- * or resting on other bodies with no ground under it.
+ * Try to return a sleeping block or compound to the grid. The answer is
+ * 'done' when it went (the body is gone); 'never' when it cannot go as it
+ * lies, which nothing changes until it moves again (turned too far from the
+ * grid's axes, too far from a cell centre, into something solid, or resting on
+ * other bodies with no ground under it); and 'later' when it lies right but
+ * the player or another body is in one of its cells, which may not last.
+ *
+ * A cell is free to take a block when nothing solid is in it. Water there is
+ * pushed aside, a plant is crushed, and a torch, crop or other fitting is
+ * knocked off as what it drops, as under a loose block that lands on one.
  */
-export function trySettle(sys: RigidBodies, b: Body): boolean {
+export function trySettle(sys: RigidBodies, b: Body): 'done' | 'later' | 'never' {
   const w = sys.world;
   const v = b.view;
   const angle = nearestGridRotation(v.qx, v.qy, v.qz, v.qw, grid);
-  if (angle > sys.snapAngle) return false;
+  if (angle > sys.snapAngle) return 'never';
   // True rotation, to measure how far each block would jump.
   const { qx, qy, qz, qw } = v;
   const r = [
@@ -41,6 +47,7 @@ export function trySettle(sys: RigidBodies, b: Body): boolean {
   const targets: number[] = [];
   const taken = new Set<number>();
   const limit = sys.snapDistance * sys.snapDistance;
+  let inTheWay = false;
   for (const c of b.cells) {
     const tx = ox + (grid[0] as number) * c.dx + (grid[1] as number) * c.dy + (grid[2] as number) * c.dz;
     const ty = oy + (grid[3] as number) * c.dx + (grid[4] as number) * c.dy + (grid[5] as number) * c.dz;
@@ -48,8 +55,9 @@ export function trySettle(sys: RigidBodies, b: Body): boolean {
     const ax = v.x + r[0] * c.dx + r[1] * c.dy + r[2] * c.dz;
     const ay = v.y + r[3] * c.dx + r[4] * c.dy + r[5] * c.dz;
     const az = v.z + r[6] * c.dx + r[7] * c.dy + r[8] * c.dz;
-    if ((tx + 0.5 - ax) ** 2 + (ty + 0.5 - ay) ** 2 + (tz + 0.5 - az) ** 2 > limit) return false;
-    if (!w.inBounds(tx, ty, tz) || !OPEN[w.get(tx, ty, tz)] || sys.pusherIn(tx, ty, tz)) return false;
+    if ((tx + 0.5 - ax) ** 2 + (ty + 0.5 - ay) ** 2 + (tz + 0.5 - az) ** 2 > limit) return 'never';
+    if (!w.inBounds(tx, ty, tz) || HARD[w.get(tx, ty, tz)]) return 'never';
+    if (sys.pusherIn(tx, ty, tz)) inTheWay = true;
     targets.push(tx, ty, tz);
     taken.add((ty * w.sz + tz) * w.sx + tx);
   }
@@ -61,12 +69,14 @@ export function trySettle(sys: RigidBodies, b: Body): boolean {
     const tz = targets[i + 2] as number;
     grounded = !taken.has((ty * w.sz + tz) * w.sx + tx) && HARD[w.get(tx, ty, tz)] === 1;
   }
-  if (!grounded) return false;
-  // Another body lying in those cells would be entombed: leave both as they are.
+  if (!grounded) return 'never';
+  // The player standing in one of those cells would be walled in, and another body lying in one entombed:
+  // leave things as they are for now.
+  if (inTheWay) return 'later';
   for (const other of sys.bodies) {
     if (other === b || other.dead) continue;
     const o = other.view;
-    if (taken.has((Math.floor(o.y) * w.sz + Math.floor(o.z)) * w.sx + Math.floor(o.x))) return false;
+    if (taken.has((Math.floor(o.y) * w.sz + Math.floor(o.z)) * w.sx + Math.floor(o.x))) return 'later';
   }
 
   sys.remove(b);
@@ -81,11 +91,13 @@ export function trySettle(sys: RigidBodies, b: Body): boolean {
       if (!dropBlock(sys, c.state, tx + 0.5, ty + 0.5, tz + 0.5)) sys.host.emit({ type: 'burst', x: tx + 0.5, y: ty + 0.5, z: tz + 0.5, state: c.state });
       return;
     }
-    if (LEVEL[there] !== 0) sys.host.fluid.displace(tx, ty, tz);
-    else if (there !== AIR) sys.host.emit({ type: 'burst', x: tx + 0.5, y: ty + 0.5, z: tz + 0.5, state: there });
+    // Water in the cell is pushed aside by the fluid, which sees the write.
+    if (LEVEL[there] === 0 && there !== AIR && (OPEN[there] || !dropBlock(sys, there, tx + 0.5, ty + 0.5, tz + 0.5))) {
+      sys.host.emit({ type: 'burst', x: tx + 0.5, y: ty + 0.5, z: tz + 0.5, state: there });
+    }
     w.set(tx, ty, tz, state);
   });
-  return true;
+  return 'done';
 }
 
 /** Turn a body into the item drops of its blocks, where it lies. Blocks that drop nothing burst. */

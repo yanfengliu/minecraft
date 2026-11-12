@@ -83,8 +83,9 @@ export function cantileverFailures(world: World, px: number, py: number, pz: num
     const dist = new Uint8Array(cells.length).fill(FAR);
     const buckets: number[][] = Array.from({ length: 10 }, () => []);
     let lowest = 0;
-    const reach = (i: number, d: number): void => {
-      if (!present(i) || d >= (dist[i] as number) || d > (SPAN[(cells[i] as DetachedCell).state] as number)) return;
+    // `resting` is a block standing on the one that reaches it: its own material is not asked to span anything.
+    const reach = (i: number, d: number, resting = false): void => {
+      if (!present(i) || d >= (dist[i] as number) || (!resting && d > (SPAN[(cells[i] as DetachedCell).state] as number))) return;
       dist[i] = d;
       (buckets[d] as number[]).push(i);
       if (d < lowest) lowest = d;
@@ -117,8 +118,11 @@ export function cantileverFailures(world: World, px: number, py: number, pz: num
       const c = cells[i] as DetachedCell;
       for (let n = 0; n < 6; n++) {
         const j = index.get(key(c.x + (DX[n] as number), c.y + (DY[n] as number), c.z + (DZ[n] as number)));
-        // What rests on a block that stands is carried by it; what hangs beside or under it is one step further out.
-        if (j !== undefined) reach(j, n === 2 ? 0 : d + 1);
+        if (j === undefined) continue;
+        // What rests on a block that stands is carried by it, as far out as that block is and no nearer:
+        // a second course on a beam does not shorten the beam. What hangs beside or under is one step further out.
+        if (n === 2) reach(j, d, true);
+        else reach(j, d + 1);
       }
     }
     const out = new Uint8Array(cells.length);

@@ -120,9 +120,13 @@ export class PressureSearch {
   /**
    * Search from the surface cell (x, y, z) holding `level` units. Returns true
    * and sets `tx, ty, tz, tState` when it finds a cell that can take water and
-   * would still be lower afterwards.
+   * would still be lower afterwards. With `accept`, a cell it refuses is
+   * passed over as if it were a wall.
    */
-  find(x: number, y: number, z: number, level: number, below: number, nState: Int32Array, nOpen: Uint8Array): boolean {
+  find(
+    x: number, y: number, z: number, level: number, below: number, nState: Int32Array, nOpen: Uint8Array,
+    accept: ((x: number, y: number, z: number) => boolean) | null = null,
+  ): boolean {
     const w = this.world;
     const q = this.queue;
     const seen = this.seen;
@@ -188,6 +192,7 @@ export class PressureSearch {
         if (SOURCE[gs] || !OPEN[gs] || d === 0) continue;
         // On our own layer only if it ends up lower than us: strictly downhill in potential.
         if (gy === y && (LEVEL[gs] as number) > level - 2) continue;
+        if (accept && !accept(gx, gy, gz)) continue;
         this.tx = gx;
         this.ty = gy;
         this.tz = gz;

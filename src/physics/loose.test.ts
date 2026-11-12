@@ -29,14 +29,13 @@ function rig(world: World, blocked: (x: number, y: number, z: number) => boolean
     nextId: () => id++,
     addView: (v) => views.push(v),
     removeView: (v) => views.splice(views.indexOf(v), 1),
-    displace: (x, y, z) => fluid.displace(x, y, z),
     blocked,
     drop: (state, x, y, z) => drops.push({ state, x, y, z }),
   };
   const loose = new LooseBlocks(world, host);
   world.changed.on((c) => {
     if (fluid.busy) return;
-    fluid.wake(c.x, c.y, c.z);
+    fluid.edited(c.x, c.y, c.z, c.old, c.state);
     loose.onBlockChanged(c.x, c.y, c.z, c.old, c.state);
   });
   const settle = (maxSeconds = 60): number => {
@@ -149,6 +148,39 @@ describe('loose blocks', () => {
     // Sinking three blocks at 3 m/s after a six-block drop takes well over a second.
     expect(seconds).toBeGreaterThan(1.8);
     console.log(`loose sink: reached the bottom and settled in ${seconds.toFixed(2)} s`);
+  });
+
+  it('is not held up by a torch, a crop or a ladder: it takes their cell, or falls past them', () => {
+    const world = createFlatWorld(64, 64, GROUND);
+    const r = rig(world);
+    // A torch and a ripe crop standing on the ground, and a tuft of grass, each with a loose block set on top of it.
+    world.setRaw(20, GROUND + 1, 20, B.torch);
+    world.setRaw(24, GROUND + 1, 20, B.wheat + 3);
+    world.setRaw(28, GROUND + 1, 20, B.tall_grass);
+    world.set(20, GROUND + 2, 20, B.sand);
+    world.set(24, GROUND + 2, 20, B.gravel);
+    world.set(28, GROUND + 2, 20, B.sand);
+    // A ladder up a wall, and sand let go at the top of it.
+    for (let y = GROUND + 1; y <= GROUND + 6; y++) world.setRaw(32, y, 20, B.stone);
+    for (let y = GROUND + 1; y <= GROUND + 5; y++) world.setRaw(33, y, 20, B.ladder + 3);
+    world.set(33, GROUND + 8, 20, B.sand);
+    r.settle();
+    expect(r.loose.idle).toBe(true);
+    // Each came down into the cell below it, on the ground.
+    expect(world.get(20, GROUND + 1, 20)).toBe(B.sand);
+    expect(world.get(24, GROUND + 1, 20)).toBe(B.gravel);
+    expect(world.get(28, GROUND + 1, 20)).toBe(B.sand);
+    for (const x of [20, 24, 28]) expect(world.get(x, GROUND + 2, 20)).toBe(B.air);
+    // The sand went past four rungs and took the place of the lowest.
+    expect(world.get(33, GROUND + 1, 20)).toBe(B.sand);
+    for (let y = GROUND + 2; y <= GROUND + 5; y++) expect(world.get(33, y, 20)).toBe(B.ladder + 3);
+    // What was knocked off is handed on to be dropped, once each; the grass was only crushed.
+    const dropped = r.drops.map((d) => `${d.state}@${d.x},${d.y},${d.z}`).sort();
+    expect(dropped).toEqual([
+      `${B.torch}@20.5,${GROUND + 1.5},20.5`, `${B.wheat + 3}@24.5,${GROUND + 1.5},20.5`, `${B.ladder + 3}@33.5,${GROUND + 1.5},20.5`,
+    ].sort());
+    expect(r.events.filter((e) => e.type === 'burst').map((e) => (e as { state: number }).state)).toEqual([B.tall_grass]);
+    expect(r.events.filter((e) => e.type === 'land')).toHaveLength(4);
   });
 
   it('turns a block into an item when it lands on the player', () => {

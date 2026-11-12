@@ -247,6 +247,58 @@ describe('structure', () => {
     expect(r2.pieces).toHaveLength(0);
   });
 
+  it('holds a beam two courses deep to the same span as one', () => {
+    const world = createFlatWorld(64, 64, GROUND);
+    const r = rig(world);
+    // The beam of the test above with a second course of planks laid on it, and on that a run of glass,
+    // which spans two blocks of its own but here is only being carried.
+    for (let y = GROUND + 1; y <= GROUND + 4; y++) world.setRaw(20, y, 30, B.bricks);
+    for (let x = 21; x <= 30; x++) for (let y = GROUND + 4; y <= GROUND + 5; y++) world.setRaw(x, y, 30, B.oak_planks);
+    for (let x = 21; x <= 30; x++) world.setRaw(x, GROUND + 6, 30, B.window);
+    for (let y = GROUND + 1; y <= GROUND + 3; y++) world.setRaw(30, y, 30, B.oak_planks);
+    world.set(30, GROUND + 1, 30, B.air);
+    r.structure.step();
+    // Each course is as far from the pier as the one under it: all three hold for six blocks and go beyond.
+    for (let y = GROUND + 4; y <= GROUND + 6; y++) {
+      const block = y === GROUND + 6 ? B.window : B.oak_planks;
+      for (let x = 21; x <= 26; x++) expect(world.get(x, y, 30), `course at +${y - GROUND}, x = ${x}`).toBe(block);
+      for (let x = 27; x <= 30; x++) expect(world.get(x, y, 30), `course at +${y - GROUND}, x = ${x}`).toBe(B.air);
+    }
+    // Twelve blocks of beam and glass, and the two of the post left hanging from it.
+    expect(r.pieces.flatMap((p) => p.cells)).toHaveLength(14);
+    expect(above(world).size).toBe(4 + 18);
+  });
+
+  it('does not take a stack of placed earth for the ground once its foot is dug away', () => {
+    const world = createFlatWorld(64, 64, GROUND);
+    const r = rig(world, { cantilever: false });
+    // A pillar of dirt eight high, as a player would pile it up, with a plank deck fixed to its top.
+    for (let y = GROUND + 1; y <= GROUND + 8; y++) world.setRaw(30, y, 30, B.dirt);
+    for (let z = 29; z <= 31; z++) for (let x = 31; x <= 34; x++) world.setRaw(x, GROUND + 8, z, B.oak_planks);
+    // While it stands on the ground it is as good as ground: taking a plank away brings nothing down.
+    world.set(34, GROUND + 8, 31, B.air);
+    r.structure.step();
+    expect(r.pieces).toHaveLength(0);
+    // Dig out its foot. Seven blocks of dirt in a column are still only something built, with air under it.
+    world.set(30, GROUND + 1, 30, B.air);
+    r.structure.step();
+    const gone = r.pieces.flatMap((p) => p.cells);
+    expect(gone.filter((c) => c.state === B.dirt)).toHaveLength(7);
+    expect(gone.filter((c) => c.state === B.oak_planks)).toHaveLength(11);
+    expect(above(world).size).toBe(0);
+    expect(groundIntact(world)).toBe(true);
+
+    // Real ground with a hollow under it is another matter: it is held by the ground on either side.
+    const hill = createFlatWorld(64, 64, GROUND);
+    const h = rig(hill);
+    for (let y = GROUND - 12; y <= GROUND - 10; y++) for (let z = 28; z <= 32; z++) for (let x = 28; x <= 32; x++) hill.setRaw(x, y, z, B.air);
+    hill.set(30, GROUND, 30, B.air);
+    hill.set(30, GROUND - 9, 30, B.air);
+    h.structure.step();
+    expect(h.pieces).toHaveLength(0);
+    expect(h.structure.pending).toBe(0);
+  });
+
   it('finds nothing to do after an ordinary dig, in well under 0.3 ms', () => {
     const world = createFlatWorld(64, 64, GROUND);
     const r = rig(world);

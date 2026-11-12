@@ -20,9 +20,11 @@ const LEVEL = WATER_LEVEL;
 const AIR = B.air;
 const BEDROCK = B.bedrock;
 
-/** A natural block counts as ground when this many cells straight below it are natural and solid too. */
-const GROUND_DEPTH = 3;
-/** A connected piece larger than this is taken to be terrain. */
+/**
+ * A connected piece larger than this is taken to be held up, whatever the truth: tracing further costs more
+ * than a frame can spare, and a piece this size could not be simulated as rubble anyway. It is the one case
+ * left where something with nothing under it stays in the air.
+ */
 const VISIT_CAP = 4096;
 /** Leaves further than this many steps from a felled trunk stay where they are. */
 const LEAF_REACH = 6;
@@ -69,14 +71,36 @@ export function isStructural(state: number): boolean {
   return HARD[state] === 1 && IS_LOOSE[state] === 0 && LEAF[state] === 0;
 }
 
-/** True when the block at this cell is ground: bedrock, the bottom of the world, or natural rock and soil with more of the same beneath. */
+/** Per state: 1 for natural rock and soil, the stuff the ground is made of. */
+const EARTH = Uint8Array.from(NATURAL, (n, s) => (n && SOLID[s] ? 1 : 0));
+
+/**
+ * True when the block at this cell is ground: bedrock, the bottom of the
+ * world, or natural rock and soil standing on more of the same all the way
+ * down. All the way, because placed earth is the same block as the earth that
+ * was there: a stack of it with air beneath is a thing somebody built, however
+ * tall it is, and holds nothing up. Real ground over a cave fails this too,
+ * and is then found held by the ground beside it.
+ */
 export function isGround(world: World, x: number, y: number, z: number, state: number): boolean {
   if (y <= 0 || state === BEDROCK) return true;
-  if (!IS_NATURAL[state] || !HARD[state]) return false;
-  for (let d = 1; d <= GROUND_DEPTH; d++) {
-    if (y - d < 0) return true;
-    const s = world.get(x, y - d, z);
-    if (!IS_NATURAL[s] || !HARD[s]) return false;
+  if (EARTH[state] === 0) return false;
+  if (x < 0 || z < 0 || x >= world.sx || z >= world.sz || y >= world.sy) return false;
+  // Straight down the column, a section at a time: one that is all rock (most of them, at depth) is passed whole.
+  const column = ((z & 31) << 5) | (x & 31);
+  const sxi = x >> 5;
+  const szi = z >> 5;
+  for (let cy = y - 1; cy >= 0; ) {
+    const si = ((cy >> 5) * world.nsz + szi) * world.nsx + sxi;
+    const cells = world.blocks[si];
+    if (!cells) {
+      if (EARTH[world.uniform[si] as number] === 0) return false;
+      cy = (cy & ~31) - 1;
+      continue;
+    }
+    for (const floor = cy & ~31; cy >= floor; cy--) {
+      if (EARTH[cells[((cy & 31) << 10) | column] as number] === 0) return false;
+    }
   }
   return true;
 }

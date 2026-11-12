@@ -35,6 +35,8 @@ const TERRAIN_LOOKAHEAD = 0.1;
 /** A body that leaves the island or falls out of the bottom of the world is forgotten. */
 const WORLD_MARGIN = 8;
 const SETTLES_PER_STEP = 4;
+/** Seconds before a body that found something in its way tries again to return to the grid. */
+const SETTLE_RETRY = 1;
 /** No body moves faster than this, m/s: two thirds of a block per step. */
 const MAX_SPEED = 40;
 /** Steps a moving body's centre may be inside a full block before it is lifted out. */
@@ -56,6 +58,9 @@ export class RigidBodies {
   readonly pusher = new Pusher();
   /** Bodies awake after the last step. */
   awake = 0;
+  /** Blocks (by state) and items (by item id) given up for good: see `forget`. */
+  readonly blocksGone = new Map<number, number>();
+  readonly itemsGone = new Map<number, number>();
   readonly maxBodies: number;
   readonly maxItems: number;
   readonly itemLifetime: number;
@@ -139,7 +144,7 @@ export class RigidBodies {
       view, rb, kind, cells, material: 0, mass: 1, volume: 1,
       min: [0, 0, 0], max: [0, 0, 0], radius: 1, com: [0, 0, 0], samples: new Float32Array(0),
       wet: 0, inWater: false, dry: 1, angDamp: 0, vx: vel.x, vy: vel.y, vz: vel.z,
-      quiet: 1, asleep: 0, snapRefused: false, buried: 0, pushedAt: -1, age: 0, born: this.born++, tree: opts.tree === true,
+      quiet: 1, asleep: 0, settleAt: 0, buried: 0, pushedAt: -1, age: 0, born: this.born++, tree: opts.tree === true,
       range: new Int32Array(6).fill(-1), dead: false,
     };
     // So a collider found by a query leads back to this record.
@@ -214,12 +219,21 @@ export class RigidBodies {
     b.range.fill(-1);
   }
 
+  /** Take a body out of the simulation. Whoever calls this has put what it was made of somewhere else. */
   remove(b: Body): void {
     if (b.dead) return;
     b.dead = true;
     this.anyDead = true;
     this.rapier.removeRigidBody(b.rb);
     this.host.removeView(b.view);
+  }
+
+  /** Give a body up for good, with nothing to show for it: it fell off the world, or faded as an item. It is counted, so the books still balance. */
+  forget(b: Body): void {
+    if (b.dead) return;
+    if (b.kind === 'item') this.itemsGone.set(b.view.item, (this.itemsGone.get(b.view.item) ?? 0) + b.view.count);
+    else for (const c of b.cells) this.blocksGone.set(c.state, (this.blocksGone.get(c.state) ?? 0) + 1);
+    this.remove(b);
   }
 
   // --- the outside world -----------------------------------------------------
@@ -263,9 +277,12 @@ export class RigidBodies {
       const b = this.bodies[i] as Body;
       if (b.dead) continue;
       if (this.sync(b, dt)) awake++;
-      else if (b.kind !== 'item' && !b.snapRefused && b.asleep >= this.settleTime && settles < SETTLES_PER_STEP) {
+      else if (b.kind !== 'item' && b.asleep >= this.settleTime && b.asleep >= b.settleAt && settles < SETTLES_PER_STEP) {
         settles++;
-        if (!trySettle(this, b)) b.snapRefused = true;
+        const went = trySettle(this, b);
+        // In the way of the player or of another body: they may move on, and nothing would tell this one. Ask again shortly.
+        if (went === 'later') b.settleAt = b.asleep + SETTLE_RETRY;
+        else if (went === 'never') b.settleAt = Infinity;
       }
     }
     this.awake = awake;
@@ -397,7 +414,7 @@ export class RigidBodies {
     }
     if (view.sleeping) {
       view.sleeping = false;
-      b.snapRefused = false;
+      b.settleAt = 0;
     }
     b.asleep = 0;
     const v = rb.linvel(this.v);
@@ -410,7 +427,7 @@ export class RigidBodies {
     b.vz = v.z;
     const w = this.world;
     if (t.y < -WORLD_MARGIN || t.x < -WORLD_MARGIN || t.z < -WORLD_MARGIN || t.x > w.sx + WORLD_MARGIN || t.z > w.sz + WORLD_MARGIN) {
-      this.remove(b);
+      this.forget(b);
       return false;
     }
     // Its centre of mass inside a full block: something was built where it lies, or it got into the hollow under the ground's shell.
@@ -485,6 +502,6 @@ export class RigidBodies {
       this.needTerrain(b);
       return;
     }
-    this.remove(b);
+    this.forget(b);
   }
 }
